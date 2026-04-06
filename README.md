@@ -25,18 +25,16 @@ Built for use with [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
 ## Install
 
 ```bash
-cargo install pit
-```
-
-Or build from source:
-
-```bash
-cargo build --release
+curl -fsSL https://raw.githubusercontent.com/uname-n/pit/master/install.sh | sh
 ```
 
 ## Setup
 
-Add pit to your project's `.mcp.json`:
+```bash
+claude mcp add pit -- pit
+```
+
+Or add pit to your project's `.mcp.json`:
 
 ```json
 {
