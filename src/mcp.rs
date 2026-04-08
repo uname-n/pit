@@ -31,7 +31,7 @@ impl SchemaObject {
 fn tool_definitions() -> Vec<ToolDef> {
     vec![
         ToolDef {
-            name: "create_issue",
+            name: "pit_create_issue",
             description: "Create a new issue.",
             input_schema: SchemaObject::new(json!({
                 "title":  { "type": "string", "description": "Required." },
@@ -42,7 +42,7 @@ fn tool_definitions() -> Vec<ToolDef> {
             }), vec!["title"]),
         },
         ToolDef {
-            name: "list_issues",
+            name: "pit_list_issues",
             description: "List issues with optional filters, sorting, and pagination.",
             input_schema: SchemaObject::new(json!({
                 "status": { "type": "string", "enum": ["open", "in-progress", "closed"] },
@@ -55,14 +55,14 @@ fn tool_definitions() -> Vec<ToolDef> {
             }), vec![]),
         },
         ToolDef {
-            name: "get_issue",
+            name: "pit_get_issue",
             description: "Get a single issue by ID, including all comments.",
             input_schema: SchemaObject::new(json!({
                 "id": { "type": "integer", "description": "Required." }
             }), vec!["id"]),
         },
         ToolDef {
-            name: "update_issue",
+            name: "pit_update_issue",
             description: "Update an existing issue. Only supplied fields are changed.",
             input_schema: SchemaObject::new(json!({
                 "id":            { "type": "integer", "description": "Required." },
@@ -77,7 +77,7 @@ fn tool_definitions() -> Vec<ToolDef> {
             }), vec!["id"]),
         },
         ToolDef {
-            name: "add_comment",
+            name: "pit_add_comment",
             description: "Add a comment to an issue.",
             input_schema: SchemaObject::new(json!({
                 "id":   { "type": "integer", "description": "Issue ID. Required." },
@@ -85,7 +85,7 @@ fn tool_definitions() -> Vec<ToolDef> {
             }), vec!["id", "body"]),
         },
         ToolDef {
-            name: "search_issues",
+            name: "pit_search_issues",
             description: "Full-text search across issue titles, bodies, and comments.",
             input_schema: SchemaObject::new(json!({
                 "query":  { "type": "string", "description": "Required." },
@@ -95,19 +95,19 @@ fn tool_definitions() -> Vec<ToolDef> {
             }), vec!["query"]),
         },
         ToolDef {
-            name: "list_labels",
+            name: "pit_list_labels",
             description: "List all labels with issue counts.",
             input_schema: SchemaObject::new(json!({}), vec![]),
         },
         ToolDef {
-            name: "delete_issue",
+            name: "pit_delete_issue",
             description: "Delete an issue and all associated comments and labels.",
             input_schema: SchemaObject::new(json!({
                 "id": { "type": "integer", "description": "Required." }
             }), vec!["id"]),
         },
         ToolDef {
-            name: "link_issues",
+            name: "pit_link_issues",
             description: "Create a directional link between two issues.",
             input_schema: SchemaObject::new(json!({
                 "source_id": { "type": "integer", "description": "Required." },
@@ -116,7 +116,7 @@ fn tool_definitions() -> Vec<ToolDef> {
             }), vec!["source_id", "target_id", "link_type"]),
         },
         ToolDef {
-            name: "unlink_issues",
+            name: "pit_unlink_issues",
             description: "Remove a link between two issues.",
             input_schema: SchemaObject::new(json!({
                 "source_id": { "type": "integer", "description": "Required." },
@@ -153,16 +153,16 @@ pub fn handle_message(db: &Db, msg: &Value) -> Option<Value> {
             let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
 
             let result = match tool_name {
-                "create_issue" => db.create_issue(&arguments),
-                "list_issues" => db.list_issues(&arguments),
-                "get_issue" => db.get_issue(&arguments),
-                "update_issue" => db.update_issue(&arguments),
-                "add_comment" => db.add_comment(&arguments),
-                "search_issues" => db.search_issues(&arguments),
-                "list_labels" => db.list_labels(),
-                "delete_issue" => db.delete_issue(&arguments),
-                "link_issues" => db.link_issues(&arguments),
-                "unlink_issues" => db.unlink_issues(&arguments),
+                "pit_create_issue" => db.create_issue(&arguments),
+                "pit_list_issues" => db.list_issues(&arguments),
+                "pit_get_issue" => db.get_issue(&arguments),
+                "pit_update_issue" => db.update_issue(&arguments),
+                "pit_add_comment" => db.add_comment(&arguments),
+                "pit_search_issues" => db.search_issues(&arguments),
+                "pit_list_labels" => db.list_labels(),
+                "pit_delete_issue" => db.delete_issue(&arguments),
+                "pit_link_issues" => db.link_issues(&arguments),
+                "pit_unlink_issues" => db.unlink_issues(&arguments),
                 _ => Err(crate::error::PitError::InvalidParams(format!("unknown tool: {tool_name}"))),
             };
 
@@ -251,16 +251,16 @@ mod tests {
         assert_eq!(tools.len(), 10);
 
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert!(names.contains(&"create_issue"));
-        assert!(names.contains(&"list_issues"));
-        assert!(names.contains(&"get_issue"));
-        assert!(names.contains(&"update_issue"));
-        assert!(names.contains(&"add_comment"));
-        assert!(names.contains(&"search_issues"));
-        assert!(names.contains(&"list_labels"));
-        assert!(names.contains(&"delete_issue"));
-        assert!(names.contains(&"link_issues"));
-        assert!(names.contains(&"unlink_issues"));
+        assert!(names.contains(&"pit_create_issue"));
+        assert!(names.contains(&"pit_list_issues"));
+        assert!(names.contains(&"pit_get_issue"));
+        assert!(names.contains(&"pit_update_issue"));
+        assert!(names.contains(&"pit_add_comment"));
+        assert!(names.contains(&"pit_search_issues"));
+        assert!(names.contains(&"pit_list_labels"));
+        assert!(names.contains(&"pit_delete_issue"));
+        assert!(names.contains(&"pit_link_issues"));
+        assert!(names.contains(&"pit_unlink_issues"));
     }
 
     #[test]
@@ -281,7 +281,7 @@ mod tests {
     #[test]
     fn tools_call_create_and_get() {
         let db = test_db();
-        let resp = call_tool(&db, "create_issue", json!({"title": "test"}));
+        let resp = call_tool(&db, "pit_create_issue", json!({"title": "test"}));
         assert!(resp["result"]["content"][0]["text"].as_str().is_some());
 
         let text = resp["result"]["content"][0]["text"].as_str().unwrap();
@@ -289,7 +289,7 @@ mod tests {
         assert_eq!(issue["title"], "test");
         let id = issue["id"].as_i64().unwrap();
 
-        let resp = call_tool(&db, "get_issue", json!({"id": id}));
+        let resp = call_tool(&db, "pit_get_issue", json!({"id": id}));
         let text = resp["result"]["content"][0]["text"].as_str().unwrap();
         let fetched: Value = serde_json::from_str(text).unwrap();
         assert_eq!(fetched["title"], "test");
@@ -298,8 +298,8 @@ mod tests {
     #[test]
     fn tools_call_list_issues() {
         let db = test_db();
-        call_tool(&db, "create_issue", json!({"title": "a"}));
-        let resp = call_tool(&db, "list_issues", json!({}));
+        call_tool(&db, "pit_create_issue", json!({"title": "a"}));
+        let resp = call_tool(&db, "pit_list_issues", json!({}));
         let text = resp["result"]["content"][0]["text"].as_str().unwrap();
         let data: Value = serde_json::from_str(text).unwrap();
         assert_eq!(data["total"], 1);
@@ -308,12 +308,12 @@ mod tests {
     #[test]
     fn tools_call_update_issue() {
         let db = test_db();
-        let resp = call_tool(&db, "create_issue", json!({"title": "old"}));
+        let resp = call_tool(&db, "pit_create_issue", json!({"title": "old"}));
         let text = resp["result"]["content"][0]["text"].as_str().unwrap();
         let issue: Value = serde_json::from_str(text).unwrap();
         let id = issue["id"].as_i64().unwrap();
 
-        let resp = call_tool(&db, "update_issue", json!({"id": id, "title": "new"}));
+        let resp = call_tool(&db, "pit_update_issue", json!({"id": id, "title": "new"}));
         let text = resp["result"]["content"][0]["text"].as_str().unwrap();
         let updated: Value = serde_json::from_str(text).unwrap();
         assert_eq!(updated["title"], "new");
@@ -322,11 +322,11 @@ mod tests {
     #[test]
     fn tools_call_add_comment() {
         let db = test_db();
-        let resp = call_tool(&db, "create_issue", json!({"title": "t"}));
+        let resp = call_tool(&db, "pit_create_issue", json!({"title": "t"}));
         let text = resp["result"]["content"][0]["text"].as_str().unwrap();
         let id = serde_json::from_str::<Value>(text).unwrap()["id"].as_i64().unwrap();
 
-        let resp = call_tool(&db, "add_comment", json!({"id": id, "body": "noted"}));
+        let resp = call_tool(&db, "pit_add_comment", json!({"id": id, "body": "noted"}));
         let text = resp["result"]["content"][0]["text"].as_str().unwrap();
         let comment: Value = serde_json::from_str(text).unwrap();
         assert_eq!(comment["body"], "noted");
@@ -335,8 +335,8 @@ mod tests {
     #[test]
     fn tools_call_search_issues() {
         let db = test_db();
-        call_tool(&db, "create_issue", json!({"title": "searchable widget"}));
-        let resp = call_tool(&db, "search_issues", json!({"query": "widget"}));
+        call_tool(&db, "pit_create_issue", json!({"title": "searchable widget"}));
+        let resp = call_tool(&db, "pit_search_issues", json!({"query": "widget"}));
         let text = resp["result"]["content"][0]["text"].as_str().unwrap();
         let data: Value = serde_json::from_str(text).unwrap();
         assert_eq!(data["total"], 1);
@@ -345,8 +345,8 @@ mod tests {
     #[test]
     fn tools_call_list_labels() {
         let db = test_db();
-        call_tool(&db, "create_issue", json!({"title": "t", "labels": ["bug"]}));
-        let resp = call_tool(&db, "list_labels", json!({}));
+        call_tool(&db, "pit_create_issue", json!({"title": "t", "labels": ["bug"]}));
+        let resp = call_tool(&db, "pit_list_labels", json!({}));
         let text = resp["result"]["content"][0]["text"].as_str().unwrap();
         let data: Value = serde_json::from_str(text).unwrap();
         assert_eq!(data["labels"][0]["name"], "bug");
@@ -355,11 +355,11 @@ mod tests {
     #[test]
     fn tools_call_delete_issue() {
         let db = test_db();
-        let resp = call_tool(&db, "create_issue", json!({"title": "doomed"}));
+        let resp = call_tool(&db, "pit_create_issue", json!({"title": "doomed"}));
         let text = resp["result"]["content"][0]["text"].as_str().unwrap();
         let id = serde_json::from_str::<Value>(text).unwrap()["id"].as_i64().unwrap();
 
-        let resp = call_tool(&db, "delete_issue", json!({"id": id}));
+        let resp = call_tool(&db, "pit_delete_issue", json!({"id": id}));
         let text = resp["result"]["content"][0]["text"].as_str().unwrap();
         let data: Value = serde_json::from_str(text).unwrap();
         assert_eq!(data["deleted"], true);
@@ -378,7 +378,7 @@ mod tests {
     #[test]
     fn tools_call_returns_error_for_not_found() {
         let db = test_db();
-        let resp = call_tool(&db, "get_issue", json!({"id": 999}));
+        let resp = call_tool(&db, "pit_get_issue", json!({"id": 999}));
         assert!(resp["error"].is_object());
         assert_eq!(resp["error"]["code"], -32602);
     }
@@ -386,7 +386,7 @@ mod tests {
     #[test]
     fn tools_call_returns_error_for_invalid_params() {
         let db = test_db();
-        let resp = call_tool(&db, "create_issue", json!({}));
+        let resp = call_tool(&db, "pit_create_issue", json!({}));
         assert!(resp["error"].is_object());
         assert_eq!(resp["error"]["code"], -32600);
     }

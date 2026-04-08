@@ -52,11 +52,11 @@ pit will create a `.pit/db.sqlite` file in your working directory. To use a cust
 
 | Tool | Description |
 |---|---|
-| `create_issue` | Create a new issue with optional body, labels, and status |
-| `list_issues` | List issues with filtering by status/labels, sorting, and pagination |
-| `get_issue` | Get a single issue with all its comments |
-| `update_issue` | Update title, body, status, labels, or close reason |
-| `add_comment` | Add a comment to an issue |
-| `search_issues` | Full-text search across titles, bodies, and comments |
-| `list_labels` | List all labels with issue counts |
-| `delete_issue` | Delete an issue and its comments |
+| `pit_create_issue` | Create a new issue with optional body, labels, and status |
+| `pit_list_issues` | List issues with filtering by status/labels, sorting, and pagination |
+| `pit_get_issue` | Get a single issue with all its comments |
+| `pit_update_issue` | Update title, body, status, labels, or close reason |
+| `pit_add_comment` | Add a comment to an issue |
+| `pit_search_issues` | Full-text search across titles, bodies, and comments |
+| `pit_list_labels` | List all labels with issue counts |
+| `pit_delete_issue` | Delete an issue and its comments |
