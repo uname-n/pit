@@ -1,6 +1,9 @@
 use crate::db::Db;
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEventKind},
+    event::{
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, MouseButton,
+        MouseEvent, MouseEventKind,
+    },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -46,6 +49,8 @@ struct App {
     total: usize,
     detail: Option<Value>,
     detail_scroll: u16,
+    column_rects: [Rect; 3],
+    detail_rect: Option<Rect>,
 }
 
 impl App {
@@ -80,6 +85,8 @@ impl App {
             total: 0,
             detail: None,
             detail_scroll: 0,
+            column_rects: [Rect::new(0, 0, 0, 0); 3],
+            detail_rect: None,
         }
     }
 
@@ -97,6 +104,7 @@ impl App {
             self.detail_scroll = 0;
             return;
         }
+        self.detail_scroll = 0;
         self.load_detail(db);
     }
 
@@ -105,26 +113,11 @@ impl App {
             match db.get_issue(&json!({ "id": id })) {
                 Ok(v) => {
                     self.detail = Some(v);
-                    self.detail_scroll = 0;
                 }
                 Err(e) => self.error = Some(e.to_string()),
             }
         } else {
             self.detail = None;
-        }
-    }
-
-    fn sync_detail(&mut self, db: &Db) {
-        if self.detail.is_none() {
-            return;
-        }
-        let current = self.current_issue_id();
-        let shown = self
-            .detail
-            .as_ref()
-            .and_then(|v| v.get("id").and_then(Value::as_i64));
-        if current != shown {
-            self.load_detail(db);
         }
     }
 
@@ -192,7 +185,7 @@ fn parse_card(v: &Value) -> IssueCard {
 pub fn run(db: &Db) -> io::Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -202,7 +195,7 @@ pub fn run(db: &Db) -> io::Result<()> {
     let res = event_loop(&mut terminal, &mut app, db);
 
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
     terminal.show_cursor()?;
     res
 }
@@ -217,67 +210,69 @@ fn event_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App, db: &Db) ->
             .unwrap_or(Duration::from_millis(0));
 
         if event::poll(timeout)? {
-            if let Event::Key(key) = event::read()? {
+            let ev = event::read()?;
+            if let Event::Mouse(m) = ev {
+                handle_mouse(app, db, m);
+                continue;
+            }
+            if let Event::Key(key) = ev {
                 if key.kind != KeyEventKind::Press {
                     continue;
                 }
-                let mut navigated = false;
-                match key.code {
-                    KeyCode::Char('q') => return Ok(()),
-                    KeyCode::Esc => {
-                        if app.detail.is_some() {
+                if app.detail.is_some() {
+                    match key.code {
+                        KeyCode::Char('q') => return Ok(()),
+                        KeyCode::Esc | KeyCode::Enter => {
                             app.detail = None;
                             app.detail_scroll = 0;
-                        } else {
-                            return Ok(());
                         }
-                    }
-                    KeyCode::Enter => app.toggle_detail(db),
-                    KeyCode::Char('r') => app.refresh(db),
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        app.move_item(1);
-                        navigated = true;
-                    }
-                    KeyCode::Up | KeyCode::Char('k') => {
-                        app.move_item(-1);
-                        navigated = true;
-                    }
-                    KeyCode::Left | KeyCode::Char('h') | KeyCode::BackTab => {
-                        app.move_col(-1);
-                        navigated = true;
-                    }
-                    KeyCode::Right | KeyCode::Char('l') | KeyCode::Tab => {
-                        app.move_col(1);
-                        navigated = true;
-                    }
-                    KeyCode::Home | KeyCode::Char('g') => {
-                        let col = &mut app.columns[app.selected_col];
-                        if !col.issues.is_empty() {
-                            col.state.select(Some(0));
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            app.detail_scroll = app.detail_scroll.saturating_add(1);
                         }
-                        navigated = true;
-                    }
-                    KeyCode::Char('G') | KeyCode::End => {
-                        let col = &mut app.columns[app.selected_col];
-                        if !col.issues.is_empty() {
-                            col.state.select(Some(col.issues.len() - 1));
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            app.detail_scroll = app.detail_scroll.saturating_sub(1);
                         }
-                        navigated = true;
-                    }
-                    KeyCode::PageDown | KeyCode::Char('J') => {
-                        if app.detail.is_some() {
+                        KeyCode::PageDown | KeyCode::Char('J') => {
                             app.detail_scroll = app.detail_scroll.saturating_add(5);
                         }
-                    }
-                    KeyCode::PageUp | KeyCode::Char('K') => {
-                        if app.detail.is_some() {
+                        KeyCode::PageUp | KeyCode::Char('K') => {
                             app.detail_scroll = app.detail_scroll.saturating_sub(5);
                         }
+                        KeyCode::Home | KeyCode::Char('g') => {
+                            app.detail_scroll = 0;
+                        }
+                        KeyCode::Char('G') | KeyCode::End => {
+                            app.detail_scroll = u16::MAX;
+                        }
+                        _ => {}
                     }
-                    _ => {}
-                }
-                if navigated && app.detail.is_some() {
-                    app.sync_detail(db);
+                } else {
+                    match key.code {
+                        KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
+                        KeyCode::Enter => app.toggle_detail(db),
+                        KeyCode::Char('r') => app.refresh(db),
+                        KeyCode::Down | KeyCode::Char('j') => app.move_item(1),
+                        KeyCode::Up | KeyCode::Char('k') => app.move_item(-1),
+                        KeyCode::Left | KeyCode::Char('h') | KeyCode::BackTab => {
+                            app.move_col(-1)
+                        }
+                        KeyCode::Right | KeyCode::Char('l') | KeyCode::Tab => {
+                            app.move_col(1)
+                        }
+                        KeyCode::Home | KeyCode::Char('g') => {
+                            let col = &mut app.columns[app.selected_col];
+                            if !col.issues.is_empty() {
+                                col.state.select(Some(0));
+                            }
+                        }
+                        KeyCode::Char('G') | KeyCode::End => {
+                            let col = &mut app.columns[app.selected_col];
+                            if !col.issues.is_empty() {
+                                col.state.select(Some(col.issues.len() - 1));
+                            }
+                        }
+                        _ => {}
+                    }
                 }
             }
         }
@@ -289,6 +284,7 @@ fn event_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App, db: &Db) ->
 }
 
 fn render(f: &mut Frame, app: &mut App) {
+    app.detail_rect = None;
     let has_detail = app.detail.is_some();
     let body_constraints = if has_detail {
         vec![Constraint::Percentage(55), Constraint::Percentage(45)]
@@ -373,9 +369,9 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
     let line = if app.detail.is_some() {
         Line::from(vec![
             Span::raw(" "),
-            key("←→↑↓"), Span::raw(" "), lbl("navigate".into()),
+            key("↑↓"), Span::raw(" "), lbl("scroll".into()),
             sep(),
-            key("PgUp/Dn"), Span::raw(" "), lbl("scroll".into()),
+            key("PgUp/Dn"), Span::raw(" "), lbl("page".into()),
             sep(),
             key("⏎/esc"), Span::raw(" "), lbl("close".into()),
             sep(),
@@ -408,6 +404,9 @@ fn render_columns(f: &mut Frame, area: Rect, app: &mut App) {
         ])
         .split(area);
 
+    for i in 0..3 {
+        app.column_rects[i] = cols[i];
+    }
     let selected = app.selected_col;
     for (i, col) in app.columns.iter_mut().enumerate() {
         render_column(f, cols[i], col, i == selected);
@@ -436,7 +435,8 @@ fn render_column(f: &mut Frame, area: Rect, col: &mut Column, is_selected: bool)
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(border_style)
-        .title(title_line);
+        .title(title_line)
+        .padding(Padding::new(0, 1, 0, 0));
 
     if col.issues.is_empty() {
         let empty = Paragraph::new(Line::from(Span::styled(
@@ -448,7 +448,7 @@ fn render_column(f: &mut Frame, area: Rect, col: &mut Column, is_selected: bool)
         return;
     }
 
-    let inner_width = area.width.saturating_sub(4) as usize;
+    let inner_width = area.width.saturating_sub(5) as usize;
     let items: Vec<ListItem> = col
         .issues
         .iter()
@@ -509,6 +509,7 @@ fn card_to_item(card: &IssueCard, width: usize) -> ListItem<'_> {
 }
 
 fn render_detail(f: &mut Frame, area: Rect, app: &mut App) {
+    app.detail_rect = Some(area);
     let Some(v) = &app.detail else { return };
     let id = v.get("id").and_then(Value::as_i64).unwrap_or(0);
     let title = v.get("title").and_then(Value::as_str).unwrap_or("");
@@ -550,6 +551,7 @@ fn render_detail(f: &mut Frame, area: Rect, app: &mut App) {
             title.to_string(),
             Style::default().add_modifier(Modifier::BOLD),
         ),
+        Span::raw(" "),
     ]);
 
     let block = Block::default()
@@ -607,9 +609,7 @@ fn render_detail(f: &mut Frame, area: Rect, app: &mut App) {
             Style::default().fg(DIM).add_modifier(Modifier::ITALIC),
         )));
     } else {
-        for bl in body.lines() {
-            lines.push(Line::from(Span::styled(bl.to_string(), Style::default())));
-        }
+        lines.extend(parse_markdown(body, ""));
     }
 
     if !links.is_empty() {
@@ -657,9 +657,7 @@ fn render_detail(f: &mut Frame, area: Rect, app: &mut App) {
                 ca.to_string(),
                 Style::default().fg(DIM),
             )));
-            for cl in cb.lines() {
-                lines.push(Line::from(Span::styled(format!("  {cl}"), Style::default())));
-            }
+            lines.extend(parse_markdown(cb, "  "));
         }
     }
 
@@ -675,6 +673,244 @@ fn render_detail(f: &mut Frame, area: Rect, app: &mut App) {
         .wrap(Wrap { trim: false })
         .scroll((app.detail_scroll, 0));
     f.render_widget(para, area);
+}
+
+fn handle_mouse(app: &mut App, db: &Db, m: MouseEvent) {
+    match m.kind {
+        MouseEventKind::Down(MouseButton::Left) => {
+            if let Some((ci, row)) = hit_card(app, m.column, m.row) {
+                let prev_col = app.selected_col;
+                let prev_sel = app.columns[ci].state.selected();
+                let clicked_id = app.columns[ci].issues[row].id;
+                let shown_id = app
+                    .detail
+                    .as_ref()
+                    .and_then(|v| v.get("id").and_then(Value::as_i64));
+                let already_open =
+                    shown_id == Some(clicked_id) && prev_col == ci && prev_sel == Some(row);
+                app.selected_col = ci;
+                app.columns[ci].state.select(Some(row));
+                if already_open {
+                    app.detail = None;
+                    app.detail_scroll = 0;
+                } else {
+                    app.detail_scroll = 0;
+                    app.load_detail(db);
+                }
+            }
+        }
+        MouseEventKind::ScrollDown => {
+            if app.detail.is_some() && in_rect(app.detail_rect, m.column, m.row) {
+                app.detail_scroll = app.detail_scroll.saturating_add(3);
+            } else if let Some(ci) = hit_col(app, m.column, m.row) {
+                app.selected_col = ci;
+                app.move_item(1);
+            }
+        }
+        MouseEventKind::ScrollUp => {
+            if app.detail.is_some() && in_rect(app.detail_rect, m.column, m.row) {
+                app.detail_scroll = app.detail_scroll.saturating_sub(3);
+            } else if let Some(ci) = hit_col(app, m.column, m.row) {
+                app.selected_col = ci;
+                app.move_item(-1);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn in_rect(r: Option<Rect>, x: u16, y: u16) -> bool {
+    match r {
+        Some(r) => x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height,
+        None => false,
+    }
+}
+
+fn hit_col(app: &App, mx: u16, my: u16) -> Option<usize> {
+    for (ci, r) in app.column_rects.iter().enumerate() {
+        if in_rect(Some(*r), mx, my) {
+            return Some(ci);
+        }
+    }
+    None
+}
+
+fn hit_card(app: &App, mx: u16, my: u16) -> Option<(usize, usize)> {
+    for (ci, r) in app.column_rects.iter().enumerate() {
+        if r.width < 2 || r.height < 2 {
+            continue;
+        }
+        let inner_x = r.x + 1;
+        let inner_w = r.width - 2;
+        let inner_y = r.y + 1;
+        let inner_h = r.height - 2;
+        if mx < inner_x || mx >= inner_x + inner_w {
+            continue;
+        }
+        if my < inner_y || my >= inner_y + inner_h {
+            continue;
+        }
+        let offset = app.columns[ci].state.offset();
+        let local = (my - inner_y) as usize + offset;
+        if local < app.columns[ci].issues.len() {
+            return Some((ci, local));
+        }
+    }
+    None
+}
+
+fn parse_markdown(body: &str, prefix: &str) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut in_fence = false;
+    let code_fg = Color::LightCyan;
+    for raw in body.lines() {
+        let trimmed = raw.trim_start();
+        if trimmed.starts_with("```") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            lines.push(Line::from(vec![
+                Span::raw(prefix.to_string()),
+                Span::styled(raw.to_string(), Style::default().fg(code_fg)),
+            ]));
+            continue;
+        }
+        if let Some((level, rest)) = header_split(trimmed) {
+            lines.push(Line::from(vec![
+                Span::raw(prefix.to_string()),
+                Span::styled(rest.to_string(), header_style(level)),
+            ]));
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix("> ") {
+            let mut spans = vec![
+                Span::raw(prefix.to_string()),
+                Span::styled("│ ", Style::default().fg(DIM)),
+            ];
+            for mut s in parse_inline(rest) {
+                s.style = s
+                    .style
+                    .fg(MUTED)
+                    .add_modifier(Modifier::ITALIC);
+                spans.push(s);
+            }
+            lines.push(Line::from(spans));
+            continue;
+        }
+        if let Some(rest) = trimmed
+            .strip_prefix("- ")
+            .or_else(|| trimmed.strip_prefix("* "))
+        {
+            let indent = raw.len() - trimmed.len();
+            let mut spans = vec![
+                Span::raw(prefix.to_string()),
+                Span::raw(" ".repeat(indent)),
+                Span::styled("• ", Style::default().fg(MUTED)),
+            ];
+            spans.extend(parse_inline(rest));
+            lines.push(Line::from(spans));
+            continue;
+        }
+        let mut spans = vec![Span::raw(prefix.to_string())];
+        spans.extend(parse_inline(raw));
+        lines.push(Line::from(spans));
+    }
+    lines
+}
+
+fn header_split(s: &str) -> Option<(usize, &str)> {
+    let mut level = 0;
+    let bytes = s.as_bytes();
+    while level < 6 && bytes.get(level) == Some(&b'#') {
+        level += 1;
+    }
+    if level == 0 {
+        return None;
+    }
+    if bytes.get(level) != Some(&b' ') {
+        return None;
+    }
+    Some((level, &s[level + 1..]))
+}
+
+fn header_style(level: usize) -> Style {
+    let color = match level {
+        1 => Color::LightCyan,
+        2 => Color::Cyan,
+        3 => Color::LightBlue,
+        _ => Color::Blue,
+    };
+    let mut st = Style::default().fg(color).add_modifier(Modifier::BOLD);
+    if level >= 4 {
+        st = st.add_modifier(Modifier::UNDERLINED);
+    }
+    st
+}
+
+fn parse_inline(s: &str) -> Vec<Span<'static>> {
+    let code_style = Style::default().fg(Color::LightCyan);
+    let mut out: Vec<Span<'static>> = Vec::new();
+    let mut buf = String::new();
+    let mut bold = false;
+    let mut italic = false;
+    let chars: Vec<char> = s.chars().collect();
+    let mut i = 0;
+    let style_of = |b: bool, it: bool| {
+        let mut st = Style::default();
+        if b {
+            st = st.add_modifier(Modifier::BOLD);
+        }
+        if it {
+            st = st.add_modifier(Modifier::ITALIC);
+        }
+        st
+    };
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '`' {
+            if !buf.is_empty() {
+                out.push(Span::styled(std::mem::take(&mut buf), style_of(bold, italic)));
+            }
+            let mut j = i + 1;
+            let mut code = String::new();
+            while j < chars.len() && chars[j] != '`' {
+                code.push(chars[j]);
+                j += 1;
+            }
+            if j < chars.len() {
+                out.push(Span::styled(code, code_style));
+                i = j + 1;
+                continue;
+            } else {
+                buf.push('`');
+                i += 1;
+                continue;
+            }
+        }
+        if c == '*' && chars.get(i + 1) == Some(&'*') {
+            if !buf.is_empty() {
+                out.push(Span::styled(std::mem::take(&mut buf), style_of(bold, italic)));
+            }
+            bold = !bold;
+            i += 2;
+            continue;
+        }
+        if (c == '*' || c == '_') && chars.get(i + 1) != Some(&c) {
+            if !buf.is_empty() {
+                out.push(Span::styled(std::mem::take(&mut buf), style_of(bold, italic)));
+            }
+            italic = !italic;
+            i += 1;
+            continue;
+        }
+        buf.push(c);
+        i += 1;
+    }
+    if !buf.is_empty() {
+        out.push(Span::styled(buf, style_of(bold, italic)));
+    }
+    out
 }
 
 fn truncate(s: &str, max: usize) -> String {
