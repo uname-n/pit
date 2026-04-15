@@ -59,6 +59,10 @@ pit dashboard  # tmux split: claude (top) + kanban (bottom)
 pit --help     # show all commands
 ```
 
+## Orchestration
+
+Drop [`ORC.md`](ORC.md) into your project as `CLAUDE.md` to turn Claude Code into an orchestrator that plans work in pit, delegates each issue to a subagent in its own git worktree, reviews the diff, and merges it back to main. The main checkout stays clean — Claude only plans, reviews, and integrates; subagents write the code.
+
 ## Tools
 
 | Tool | Description |
