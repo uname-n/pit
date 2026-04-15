@@ -1,8 +1,8 @@
 use crate::db::Db;
 use crossterm::{
     event::{
-        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, MouseButton,
-        MouseEvent, MouseEventKind,
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
+        MouseButton, MouseEvent, MouseEventKind,
     },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
@@ -244,6 +244,11 @@ fn event_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App, db: &Db) ->
             if let Event::Key(key) = ev {
                 if key.kind != KeyEventKind::Press {
                     continue;
+                }
+                if key.modifiers.contains(KeyModifiers::CONTROL)
+                    && matches!(key.code, KeyCode::Char('c') | KeyCode::Char('C'))
+                {
+                    return Ok(());
                 }
                 if app.detail.is_some() {
                     match key.code {

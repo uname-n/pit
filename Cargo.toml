@@ -1,6 +1,6 @@
 [package]
 name = "pit"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 description = "Local issue tracker MCP server — one binary, one SQLite file"
 repository = "https://github.com/uname-n/pit"
