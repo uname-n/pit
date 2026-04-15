@@ -21,6 +21,7 @@ Built for use with [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
 - **Labels** — auto-created on first use
 - **Comments** — threaded context on any issue
 - **Issue lifecycle** — `open` → `in-progress` → `closed`
+- **Kanban TUI** — live read-only board via `pit kanban`
 
 ## Install
 
@@ -47,6 +48,14 @@ Or add pit to your project's `.mcp.json`:
 ```
 
 pit will create a `.pit/db.sqlite` file in your working directory. To use a custom path, set the `PIT_DB` environment variable.
+
+## Usage
+
+```bash
+pit            # run as MCP server on stdio
+pit kanban     # live read-only kanban board (TUI)
+pit --help     # show all commands
+```
 
 ## Tools
 
