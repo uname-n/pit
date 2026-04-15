@@ -15,3 +15,4 @@ tokio = { version = "1", features = ["io-std", "io-util", "macros", "rt"] }
 chrono = { version = "0.4", features = ["serde"] }
 ratatui = "0.29"
 crossterm = "0.28"
+clap = { version = "4", features = ["derive"] }
