@@ -48,6 +48,7 @@ struct App {
     error: Option<String>,
     total: usize,
     detail: Option<Value>,
+    detail_id: Option<i64>,
     detail_scroll: u16,
     column_rects: [Rect; 3],
     detail_rect: Option<Rect>,
@@ -84,6 +85,7 @@ impl App {
             error: None,
             total: 0,
             detail: None,
+            detail_id: None,
             detail_scroll: 0,
             column_rects: [Rect::new(0, 0, 0, 0); 3],
             detail_rect: None,
@@ -98,26 +100,36 @@ impl App {
             .map(|c| c.id)
     }
 
-    fn toggle_detail(&mut self, db: &Db) {
-        if self.detail.is_some() {
-            self.detail = None;
-            self.detail_scroll = 0;
-            return;
-        }
+    fn close_detail(&mut self) {
+        self.detail = None;
+        self.detail_id = None;
+        self.detail_scroll = 0;
+    }
+
+    fn open_detail(&mut self, db: &Db, id: i64) {
+        self.detail_id = Some(id);
         self.detail_scroll = 0;
         self.load_detail(db);
     }
 
-    fn load_detail(&mut self, db: &Db) {
+    fn toggle_detail(&mut self, db: &Db) {
+        if self.detail.is_some() {
+            self.close_detail();
+            return;
+        }
         if let Some(id) = self.current_issue_id() {
-            match db.get_issue(&json!({ "id": id })) {
-                Ok(v) => {
-                    self.detail = Some(v);
-                }
-                Err(e) => self.error = Some(e.to_string()),
-            }
-        } else {
+            self.open_detail(db, id);
+        }
+    }
+
+    fn load_detail(&mut self, db: &Db) {
+        let Some(id) = self.detail_id else {
             self.detail = None;
+            return;
+        };
+        match db.get_issue(&json!({ "id": id })) {
+            Ok(v) => self.detail = Some(v),
+            Err(e) => self.error = Some(e.to_string()),
         }
     }
 
@@ -125,10 +137,11 @@ impl App {
         self.error = None;
         self.total = 0;
         for col in &mut self.columns {
+            let sort = if col.status == "open" { "created" } else { "updated" };
             let args = json!({
                 "status": col.status,
                 "limit": 200,
-                "sort": "updated",
+                "sort": sort,
                 "order": "desc",
             });
             match db.list_issues(&args) {
@@ -151,8 +164,21 @@ impl App {
                 }
             }
         }
-        if self.detail.is_some() {
-            self.load_detail(db);
+        if let Some(did) = self.detail_id {
+            let mut located: Option<(usize, usize)> = None;
+            for (ci, col) in self.columns.iter().enumerate() {
+                if let Some(idx) = col.issues.iter().position(|c| c.id == did) {
+                    located = Some((ci, idx));
+                    break;
+                }
+            }
+            if let Some((ci, idx)) = located {
+                self.selected_col = ci;
+                self.columns[ci].state.select(Some(idx));
+                self.load_detail(db);
+            } else {
+                self.close_detail();
+            }
         }
         self.last_refresh = Instant::now();
     }
@@ -223,8 +249,7 @@ fn event_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App, db: &Db) ->
                     match key.code {
                         KeyCode::Char('q') => return Ok(()),
                         KeyCode::Esc | KeyCode::Enter => {
-                            app.detail = None;
-                            app.detail_scroll = 0;
+                            app.close_detail();
                         }
                         KeyCode::Down | KeyCode::Char('j') => {
                             app.detail_scroll = app.detail_scroll.saturating_add(1);
@@ -543,6 +568,7 @@ fn render_detail(f: &mut Frame, area: Rect, app: &mut App) {
     };
 
     let title_line = Line::from(vec![
+        Span::raw(" "),
         priority_mark(priority),
         Span::raw(" "),
         Span::styled(format!("#{id}"), Style::default().fg(DIM)),
@@ -679,23 +705,13 @@ fn handle_mouse(app: &mut App, db: &Db, m: MouseEvent) {
     match m.kind {
         MouseEventKind::Down(MouseButton::Left) => {
             if let Some((ci, row)) = hit_card(app, m.column, m.row) {
-                let prev_col = app.selected_col;
-                let prev_sel = app.columns[ci].state.selected();
                 let clicked_id = app.columns[ci].issues[row].id;
-                let shown_id = app
-                    .detail
-                    .as_ref()
-                    .and_then(|v| v.get("id").and_then(Value::as_i64));
-                let already_open =
-                    shown_id == Some(clicked_id) && prev_col == ci && prev_sel == Some(row);
                 app.selected_col = ci;
                 app.columns[ci].state.select(Some(row));
-                if already_open {
-                    app.detail = None;
-                    app.detail_scroll = 0;
+                if app.detail_id == Some(clicked_id) {
+                    app.close_detail();
                 } else {
-                    app.detail_scroll = 0;
-                    app.load_detail(db);
+                    app.open_detail(db, clicked_id);
                 }
             }
         }
