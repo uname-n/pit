@@ -22,7 +22,7 @@ Built for use with [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
 - **Comments** — threaded context on any issue
 - **Issue lifecycle** — `open` → `in-progress` → `closed`
 - **Kanban TUI** — live read-only board via `pit kanban`
-- **Dashboard** — split-screen claude + kanban via `pit dashboard` (requires tmux)
+- **Dashboard** — split-screen claude + kanban via `pit dashboard` ([screenshot](docs/dashboard.png), requires tmux)
 
 ## Install
 
