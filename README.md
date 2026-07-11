@@ -37,10 +37,9 @@ This scaffolds everything Claude Code needs to orchestrate:
 
 ## Use it as a plain MCP server
 
-Skip the orchestration scaffolding and register pit directly:
+Skip the orchestration scaffolding and register pit directly in your `.mcp.json`:
 
 ```json
-// .mcp.json
 {
     "mcpServers": {
         "pit": {
