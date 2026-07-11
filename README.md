@@ -69,6 +69,34 @@ pit kanban     # live read-only kanban board (TUI)
 pit --help     # show all commands
 ```
 
+### Customizing colors
+
+`pit kanban` reads its board colors from `.pit/settings.json` (a sibling of the
+issue database). The file is created with sensible defaults the first time you
+run the board; edit the `#rrggbb` hex codes under `"kanban"` and relaunch to
+recolor the board. You only need to include the keys you want to change —
+omitted colors fall back to their defaults. An invalid hex value or malformed
+JSON makes `pit kanban` exit with an error naming the offending field rather
+than silently ignoring it.
+
+```json
+{
+    "kanban": {
+        "open": "#b2b2b2",
+        "in_progress": "#ff5f5f",
+        "closed": "#00cdcd",
+        "dim": "#6c6c6c",
+        "muted": "#b2b2b2",
+        "label": "#cd00cd",
+        "link_blocks": "#ff5f5f",
+        "link_duplicates": "#cd00cd",
+        "link_related": "#00cdcd"
+    }
+}
+```
+
+`.pit/` is gitignored, so this file is user-local by design.
+
 ## Orchestration
 
 [`CLAUDE.md`](CLAUDE.md) and [`.claude/settings.json`](.claude/settings.json) turn Claude Code into an orchestrator that plans work in pit, delegates each issue to a subagent in its own git worktree, reviews the diff, and merges it back to main. The main checkout stays clean — Claude only plans, reviews, and integrates; subagents write the code.

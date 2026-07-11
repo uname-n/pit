@@ -3,6 +3,7 @@ mod error;
 mod init;
 mod kanban;
 mod mcp;
+mod settings;
 mod types;
 
 use std::path::PathBuf;
@@ -60,7 +61,17 @@ fn main() {
 
     match cli.command {
         Some(Command::Kanban) => {
-            if let Err(e) = kanban::run(&db) {
+            // Board colors live in .pit/settings.json (sibling of the db file),
+            // created with defaults on first run.
+            let settings_path = db_path
+                .parent()
+                .map(|p| p.join("settings.json"))
+                .unwrap_or_else(|| PathBuf::from("./.pit/settings.json"));
+            let theme = settings::load_or_create(&settings_path).unwrap_or_else(|e| {
+                eprintln!("pit: kanban error: {e}");
+                std::process::exit(1);
+            });
+            if let Err(e) = kanban::run(&db, &theme) {
                 eprintln!("pit: kanban error: {e}");
                 std::process::exit(1);
             }

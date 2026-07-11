@@ -1,4 +1,5 @@
 use crate::db::Db;
+use crate::settings::Theme;
 use crossterm::{
     event::{
         self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
@@ -24,11 +25,13 @@ use std::{
     time::{Duration, Instant},
 };
 
-// Status accents map to named colors, i.e. ANSI palette indices, so they follow
-// the terminal theme: Open = 7, In-Progress = 1, Done = 6.
-const COL_OPEN: Color = Color::Gray;
-const COL_INPROGRESS: Color = Color::LightRed;
-const COL_CLOSED: Color = Color::Cyan;
+// Board accents (status columns, dim chrome, muted text, detail label, links)
+// are user-configurable via `.pit/settings.json` — see `crate::settings::Theme`.
+//
+// `DIM` and `MUTED` below are reserved for PROSE rendering only (markdown
+// quotes/bullets in `parse_markdown`), which is deliberately not part of the
+// board theme; they stay fixed so descriptions read consistently regardless of
+// the user's board colors.
 const DIM: Color = Color::DarkGray;
 const MUTED: Color = Color::Gray;
 
@@ -57,30 +60,31 @@ struct App {
     detail_scroll: u16,
     column_rects: [Rect; 3],
     detail_rect: Option<Rect>,
+    theme: Theme,
 }
 
 impl App {
-    fn new() -> Self {
+    fn new(theme: Theme) -> Self {
         Self {
             columns: [
                 Column {
                     status: "open",
                     title: "Open",
-                    accent: COL_OPEN,
+                    accent: theme.open,
                     issues: vec![],
                     state: ListState::default(),
                 },
                 Column {
                     status: "in-progress",
                     title: "In Progress",
-                    accent: COL_INPROGRESS,
+                    accent: theme.in_progress,
                     issues: vec![],
                     state: ListState::default(),
                 },
                 Column {
                     status: "closed",
                     title: "Closed",
-                    accent: COL_CLOSED,
+                    accent: theme.closed,
                     issues: vec![],
                     state: ListState::default(),
                 },
@@ -94,6 +98,7 @@ impl App {
             detail_scroll: 0,
             column_rects: [Rect::new(0, 0, 0, 0); 3],
             detail_rect: None,
+            theme,
         }
     }
 
@@ -238,14 +243,14 @@ fn parse_card(v: &Value) -> IssueCard {
     }
 }
 
-pub fn run(db: &Db) -> io::Result<()> {
+pub fn run(db: &Db, theme: &Theme) -> io::Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut app = App::new();
+    let mut app = App::new(*theme);
     app.refresh(db);
 
     let res = event_loop(&mut terminal, &mut app, db);
@@ -353,6 +358,7 @@ fn handle_board_key(app: &mut App, db: &Db, key: KeyEvent) -> bool {
 }
 
 fn render(f: &mut Frame, app: &mut App) {
+    let theme = app.theme; // Copy — avoids borrow conflicts with the mutable calls below.
     app.detail_rect = None;
     let has_detail = app.detail.is_some();
     let body_constraints = if has_detail {
@@ -374,7 +380,7 @@ fn render(f: &mut Frame, app: &mut App) {
     f.render_widget(
         Paragraph::new(Line::from(Span::styled(
             "─".repeat(f.area().width as usize),
-            Style::default().fg(DIM),
+            Style::default().fg(theme.dim),
         ))),
         chunks[1],
     );
@@ -399,18 +405,21 @@ fn render_header(f: &mut Frame, area: Rect, app: &App) {
         Span::styled(
             " pit ",
             Style::default()
-                .fg(COL_OPEN)
+                .fg(app.theme.open)
                 .add_modifier(Modifier::REVERSED | Modifier::BOLD),
         ),
         Span::raw("  "),
-        Span::styled("read-only", Style::default().fg(MUTED)),
+        Span::styled("read-only", Style::default().fg(app.theme.muted)),
         Span::raw("  ·  "),
         Span::styled(
             format!("{} issues", app.total),
             Style::default().add_modifier(Modifier::BOLD),
         ),
         Span::raw("  ·  "),
-        Span::styled(format!("refreshed {refresh_msg}"), Style::default().fg(DIM)),
+        Span::styled(
+            format!("refreshed {refresh_msg}"),
+            Style::default().fg(app.theme.dim),
+        ),
     ];
     if let Some(err) = &app.error {
         left.push(Span::raw("  "));
@@ -429,7 +438,8 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
             Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD),
         )
     };
-    let sep = || Span::styled("  ·  ", Style::default().fg(DIM));
+    let dim = app.theme.dim;
+    let sep = move || Span::styled("  ·  ", Style::default().fg(dim));
     let lbl = |s: String| Span::styled(s, Style::default());
 
     let line = if app.detail.is_some() {
@@ -492,16 +502,17 @@ fn render_columns(f: &mut Frame, area: Rect, app: &mut App) {
         app.column_rects[i] = cols[i];
     }
     let selected = app.selected_col;
+    let theme = app.theme; // Copy — released before the mutable column borrow below.
     for (i, col) in app.columns.iter_mut().enumerate() {
-        render_column(f, cols[i], col, i == selected);
+        render_column(f, cols[i], col, i == selected, &theme);
     }
 }
 
-fn render_column(f: &mut Frame, area: Rect, col: &mut Column, is_selected: bool) {
+fn render_column(f: &mut Frame, area: Rect, col: &mut Column, is_selected: bool, theme: &Theme) {
     let border_style = if is_selected {
         Style::default().fg(col.accent).add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(DIM)
+        Style::default().fg(theme.dim)
     };
 
     let title_line = Line::from(vec![
@@ -509,7 +520,10 @@ fn render_column(f: &mut Frame, area: Rect, col: &mut Column, is_selected: bool)
             format!(" {} ", col.title),
             Style::default().fg(col.accent).add_modifier(Modifier::BOLD),
         ),
-        Span::styled(format!("{} ", col.issues.len()), Style::default().fg(MUTED)),
+        Span::styled(
+            format!("{} ", col.issues.len()),
+            Style::default().fg(theme.muted),
+        ),
     ]);
 
     let block = Block::default()
@@ -522,7 +536,9 @@ fn render_column(f: &mut Frame, area: Rect, col: &mut Column, is_selected: bool)
     if col.issues.is_empty() {
         let empty = Paragraph::new(Line::from(Span::styled(
             "  no issues",
-            Style::default().fg(DIM).add_modifier(Modifier::ITALIC),
+            Style::default()
+                .fg(theme.dim)
+                .add_modifier(Modifier::ITALIC),
         )))
         .block(block);
         f.render_widget(empty, area);
@@ -533,7 +549,7 @@ fn render_column(f: &mut Frame, area: Rect, col: &mut Column, is_selected: bool)
     let items: Vec<ListItem> = col
         .issues
         .iter()
-        .map(|c| card_to_item(c, inner_width))
+        .map(|c| card_to_item(c, inner_width, theme))
         .collect();
     let mut list = List::new(items)
         .block(block)
@@ -555,7 +571,7 @@ fn render_column(f: &mut Frame, area: Rect, col: &mut Column, is_selected: bool)
     f.render_stateful_widget(list, area, state_ref);
 }
 
-fn card_to_item(card: &IssueCard, width: usize) -> ListItem<'_> {
+fn card_to_item<'a>(card: &'a IssueCard, width: usize, theme: &Theme) -> ListItem<'a> {
     let id = format!("#{}", card.id);
 
     let fixed = id.len() + 1; // "#id" + one trailing space
@@ -567,7 +583,7 @@ fn card_to_item(card: &IssueCard, width: usize) -> ListItem<'_> {
     };
 
     let spans = vec![
-        Span::styled(id, Style::default().fg(MUTED)),
+        Span::styled(id, Style::default().fg(theme.muted)),
         Span::raw(" "),
         Span::styled(title, Style::default()),
     ];
@@ -575,23 +591,24 @@ fn card_to_item(card: &IssueCard, width: usize) -> ListItem<'_> {
 }
 
 fn render_detail(f: &mut Frame, area: Rect, app: &mut App) {
+    let theme = app.theme; // Copy — released before app.detail_scroll is mutated below.
     app.detail_rect = Some(area);
     let Some(v) = &app.detail else { return };
     let id = v.get("id").and_then(Value::as_i64).unwrap_or(0);
     let status = v.get("status").and_then(Value::as_str).unwrap_or("");
 
     let status_accent = match status {
-        "open" => COL_OPEN,
-        "in-progress" => COL_INPROGRESS,
-        "closed" => COL_CLOSED,
-        _ => MUTED,
+        "open" => theme.open,
+        "in-progress" => theme.in_progress,
+        "closed" => theme.closed,
+        _ => theme.muted,
     };
 
     // The full title lives in the body (see detail_lines) so it wraps instead of
     // clipping against the border; the border carries only the issue id.
     let title_line = Line::from(vec![
         Span::raw(" "),
-        Span::styled(format!("#{id}"), Style::default().fg(DIM)),
+        Span::styled(format!("#{id}"), Style::default().fg(theme.dim)),
         Span::raw(" "),
     ]);
 
@@ -606,7 +623,7 @@ fn render_detail(f: &mut Frame, area: Rect, app: &mut App) {
         .title(title_line)
         .padding(Padding::new(2, 2, 1, 1));
 
-    let lines = detail_lines(v, id, status, status_accent);
+    let lines = detail_lines(v, id, status, status_accent, &theme);
 
     // Horizontal chrome = 2 borders + left/right padding (2+2); vertical = 2
     // borders + top/bottom padding (1+1). The scroll bound must count *wrapped*
@@ -658,7 +675,13 @@ fn wrapped_height(lines: &[Line<'static>], width: u16) -> u16 {
 
 /// Build the scrollable body of the detail pane: metadata, description,
 /// links, and comments.
-fn detail_lines(v: &Value, id: i64, status: &str, status_accent: Color) -> Vec<Line<'static>> {
+fn detail_lines(
+    v: &Value,
+    id: i64,
+    status: &str,
+    status_accent: Color,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
     let priority = v.get("priority").and_then(Value::as_str);
     let closed_reason = v.get("closed_reason").and_then(Value::as_str);
     let created_at = v.get("created_at").and_then(Value::as_str).unwrap_or("");
@@ -684,7 +707,7 @@ fn detail_lines(v: &Value, id: i64, status: &str, status_accent: Color) -> Vec<L
     lines.push(Line::from(""));
 
     let mut meta = vec![
-        Span::styled("status ", Style::default().fg(DIM)),
+        Span::styled("status ", Style::default().fg(theme.dim)),
         Span::styled(
             status.to_string(),
             Style::default()
@@ -693,34 +716,34 @@ fn detail_lines(v: &Value, id: i64, status: &str, status_accent: Color) -> Vec<L
         ),
     ];
     if let Some(p) = priority {
-        meta.push(Span::styled("   priority ", Style::default().fg(DIM)));
+        meta.push(Span::styled("   priority ", Style::default().fg(theme.dim)));
         meta.push(Span::styled(p.to_string(), Style::default()));
     }
     if let Some(r) = closed_reason {
-        meta.push(Span::styled("   reason ", Style::default().fg(DIM)));
+        meta.push(Span::styled("   reason ", Style::default().fg(theme.dim)));
         meta.push(Span::styled(r.to_string(), Style::default()));
     }
     lines.push(Line::from(meta));
 
     if !labels.is_empty() {
-        let mut spans = vec![Span::styled("labels ", Style::default().fg(DIM))];
+        let mut spans = vec![Span::styled("labels ", Style::default().fg(theme.dim))];
         for (i, l) in labels.iter().enumerate() {
             if i > 0 {
-                spans.push(Span::styled(" · ", Style::default().fg(DIM)));
+                spans.push(Span::styled(" · ", Style::default().fg(theme.dim)));
             }
             spans.push(Span::styled(
                 l.to_string(),
-                Style::default().fg(Color::Magenta),
+                Style::default().fg(theme.label),
             ));
         }
         lines.push(Line::from(spans));
     }
 
     lines.push(Line::from(vec![
-        Span::styled("created ", Style::default().fg(DIM)),
-        Span::styled(created_at.to_string(), Style::default().fg(MUTED)),
-        Span::styled("   updated ", Style::default().fg(DIM)),
-        Span::styled(updated_at.to_string(), Style::default().fg(MUTED)),
+        Span::styled("created ", Style::default().fg(theme.dim)),
+        Span::styled(created_at.to_string(), Style::default().fg(theme.muted)),
+        Span::styled("   updated ", Style::default().fg(theme.dim)),
+        Span::styled(updated_at.to_string(), Style::default().fg(theme.muted)),
     ]));
 
     lines.push(Line::from(""));
@@ -728,19 +751,21 @@ fn detail_lines(v: &Value, id: i64, status: &str, status_accent: Color) -> Vec<L
     if body.is_empty() {
         lines.push(Line::from(Span::styled(
             "(no description)",
-            Style::default().fg(DIM).add_modifier(Modifier::ITALIC),
+            Style::default()
+                .fg(theme.dim)
+                .add_modifier(Modifier::ITALIC),
         )));
     } else {
         lines.extend(parse_markdown(body, ""));
     }
 
-    lines.extend(detail_links_lines(v, id));
-    lines.extend(detail_comments_lines(v));
+    lines.extend(detail_links_lines(v, id, theme));
+    lines.extend(detail_comments_lines(v, theme));
     lines
 }
 
 /// The "links" section of the detail pane, or empty if the issue has none.
-fn detail_links_lines(v: &Value, id: i64) -> Vec<Line<'static>> {
+fn detail_links_lines(v: &Value, id: i64, theme: &Theme) -> Vec<Line<'static>> {
     let links = v
         .get("links")
         .and_then(Value::as_array)
@@ -753,7 +778,7 @@ fn detail_links_lines(v: &Value, id: i64) -> Vec<Line<'static>> {
         Line::from(""),
         Line::from(Span::styled(
             format!("── links ({}) ──", links.len()),
-            Style::default().fg(DIM),
+            Style::default().fg(theme.dim),
         )),
     ];
     for l in &links {
@@ -766,25 +791,25 @@ fn detail_links_lines(v: &Value, id: i64) -> Vec<Line<'static>> {
             ("←", src)
         };
         let accent = match lt {
-            "blocks" => Color::Red,
-            "duplicates" => Color::Magenta,
-            _ => Color::Cyan,
+            "blocks" => theme.link_blocks,
+            "duplicates" => theme.link_duplicates,
+            _ => theme.link_related,
         };
         lines.push(Line::from(vec![
             Span::styled(
                 format!("  {lt:<11}"),
                 Style::default().fg(accent).add_modifier(Modifier::BOLD),
             ),
-            Span::styled(arrow.to_string(), Style::default().fg(DIM)),
+            Span::styled(arrow.to_string(), Style::default().fg(theme.dim)),
             Span::raw(" "),
-            Span::styled(format!("#{other}"), Style::default().fg(MUTED)),
+            Span::styled(format!("#{other}"), Style::default().fg(theme.muted)),
         ]));
     }
     lines
 }
 
 /// The "comments" section of the detail pane, or empty if the issue has none.
-fn detail_comments_lines(v: &Value) -> Vec<Line<'static>> {
+fn detail_comments_lines(v: &Value, theme: &Theme) -> Vec<Line<'static>> {
     let comments = v
         .get("comments")
         .and_then(Value::as_array)
@@ -797,7 +822,7 @@ fn detail_comments_lines(v: &Value) -> Vec<Line<'static>> {
         Line::from(""),
         Line::from(Span::styled(
             format!("── comments ({}) ──", comments.len()),
-            Style::default().fg(DIM),
+            Style::default().fg(theme.dim),
         )),
     ];
     for c in &comments {
@@ -805,7 +830,7 @@ fn detail_comments_lines(v: &Value) -> Vec<Line<'static>> {
         let ca = c.get("created_at").and_then(Value::as_str).unwrap_or("");
         lines.push(Line::from(Span::styled(
             ca.to_string(),
-            Style::default().fg(DIM),
+            Style::default().fg(theme.dim),
         )));
         lines.extend(parse_markdown(cb, "  "));
     }
