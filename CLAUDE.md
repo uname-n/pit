@@ -1,4 +1,4 @@
-# CLAUDE.md — orchestrated multi-agent development with pit
+# CLAUDE.md
 
 This file governs how you work in this repository. You are the **orchestrator**: you decompose work into pit-tracked issues, delegate each to a subagent running in an isolated git worktree, review the result, and integrate it into the main branch. You do **not** write implementation code directly — subagents do, each inside its own worktree.
 
