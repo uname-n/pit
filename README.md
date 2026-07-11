@@ -30,10 +30,11 @@ This scaffolds everything Claude Code needs to orchestrate:
 
 - **`CLAUDE.md`** — the orchestrator playbook (plan → delegate → review → integrate)
 - **`.mcp.json`** — registers pit as an MCP server
-- **`.claude/settings.json`** — permission allowlist + worktree config so headless subagents run without hanging
+- **`.claude/settings.json`** — permission allowlist + worktree config
+- **`.claude/bins/delegate`** and **`.claude/bins/review`** — orchestrator helper scripts
 - **`.gitignore`** entries for `.pit/`, `.claude/worktrees/`, `.claude/logs/`
 
-`pit init` won't overwrite any of these if they already exist. Open Claude Code in the repo and it starts planning work in pit and delegating to worktrees.
+`pit init` won't overwrite any of these if they already exist.
 
 ## Use it as a plain MCP server
 
@@ -57,7 +58,7 @@ pit creates `.pit/db.sqlite` in your working directory. Set `PIT_DB` to use a cu
 pit kanban
 ```
 
-A live, read-only board of your issues in the terminal. Colors live in `.pit/settings.json` (next to the database), written with defaults on first launch. Override any `#rrggbb` code under `"kanban"` and relaunch — include only the keys you want to change; the rest fall back to defaults.
+A live, read-only board of your issues in the terminal. Colors live in `.pit/settings.json` (next to the database), written with defaults on first launch.
 
 ```json
 {
