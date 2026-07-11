@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+#
+# review — read a delegate run's stream-json transcript (see CLAUDE.md step 4).
+#
+# The raw .claude/logs/<uid>.jsonl transcript is large (~170KB for one issue) and
+# overflows a tool result. The useful part is the single terminal event
+# {"type":"result", ..., "result":"<final report>"}. This extracts it with jq.
+#
+# Usage:
+#   .claude/bins/review [<issue-id> | <path-to.jsonl>] [--stats|--denials|--full]
+#
+#   (no positional arg)  newest log in .claude/logs/
+#   <issue-id>           newest .claude/logs/issue-<id>-*.jsonl
+#   <path>               that exact file
+#
+# Modes (default: stats header + final report):
+#   --stats     one-line header only (subtype, turns, duration, cost, is_error)
+#   --denials   the run's permission_denials array (empty = none)
+#   --full      pretty-print every event (the whole firehose)
+
+set -euo pipefail
+
+if ! command -v jq >/dev/null 2>&1; then
+  echo "error: jq not found on PATH — install jq to use review" >&2
+  exit 3
+fi
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+log_dir=".claude/logs"
+
+# --- parse args: at most one target + at most one mode flag ------------------
+target=""
+mode="report"
+for arg in "$@"; do
+  case "$arg" in
+    --stats)   mode="stats" ;;
+    --denials) mode="denials" ;;
+    --full)    mode="full" ;;
+    --*)
+      echo "error: unknown flag '$arg'" >&2
+      exit 2
+      ;;
+    *)
+      if [[ -n "$target" ]]; then
+        echo "error: more than one target given ('$target', '$arg')" >&2
+        exit 2
+      fi
+      target="$arg"
+      ;;
+  esac
+done
+
+# --- resolve the log file ----------------------------------------------------
+log=""
+if [[ -z "$target" ]]; then
+  log="$(ls -t "$log_dir"/*.jsonl 2>/dev/null | head -1 || true)"
+  if [[ -z "$log" ]]; then
+    echo "error: no logs found in $log_dir" >&2
+    exit 1
+  fi
+elif [[ "$target" =~ ^[0-9]+$ ]]; then
+  log="$(ls -t "$log_dir"/issue-"$target"-*.jsonl 2>/dev/null | head -1 || true)"
+  if [[ -z "$log" ]]; then
+    echo "error: no logs for issue #$target in $log_dir" >&2
+    exit 1
+  fi
+else
+  log="$target"
+  if [[ ! -f "$log" ]]; then
+    echo "error: no such log file: $log" >&2
+    exit 1
+  fi
+fi
+
+# --- render ------------------------------------------------------------------
+stats_filter='select(.type=="result")
+  | "── \(.subtype) · turns=\(.num_turns) · \((.duration_ms/1000|floor))s · $\(.total_cost_usd // 0) · is_error=\(.is_error)"'
+
+case "$mode" in
+  stats)
+    jq -r "$stats_filter" "$log"
+    ;;
+  denials)
+    jq -c 'select(.type=="result").permission_denials' "$log"
+    ;;
+  full)
+    jq . "$log"
+    ;;
+  report)
+    echo "log: $log" >&2
+    jq -r "$stats_filter" "$log"
+    jq -r 'select(.type=="result").result' "$log"
+    ;;
+esac

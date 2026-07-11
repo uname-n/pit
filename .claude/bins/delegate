@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+#
+# delegate — step 3 of the orchestration loop (see CLAUDE.md).
+#
+# Spawns a headless subagent in an isolated git worktree to implement a single
+# pit issue, streaming the run as JSON events to .claude/logs/<uid>.jsonl.
+#
+# Usage:
+#   .claude/bins/delegate <issue-id> [extra-instructions]
+#
+# Effect:
+#   * creates .claude/worktrees/issue-<id>/ on branch worktree-issue-<id>
+#   * runs `claude --worktree issue-<id> -p` with the subagent template
+#   * writes a full stream-json transcript to .claude/logs/<uid>.jsonl
+#   * unlocks the worktree on exit so integrate-time removal is a plain force
+#
+# Read the resulting transcript with `.claude/bins/review <issue-id>`.
+#
+# It NEVER passes --dangerously-skip-permissions: the subagent inherits this
+# project's .claude/settings.json allow-list. If it needs a new action, add a
+# scoped rule there rather than disabling the permission gate.
+
+set -euo pipefail
+
+# --- run from the repo root so relative paths resolve from any cwd -----------
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+# --- validate input ----------------------------------------------------------
+id="${1:-}"
+if [[ -z "$id" ]]; then
+  echo "usage: $0 <issue-id> [extra-instructions]" >&2
+  exit 2
+fi
+if [[ ! "$id" =~ ^[0-9]+$ ]]; then
+  echo "error: issue-id must be a positive integer, got: '$id'" >&2
+  exit 2
+fi
+extra="${2:-}"
+
+name="issue-${id}"
+worktree_dir=".claude/worktrees/${name}"
+
+# Headless (-p) runs leave a claude session lock on the worktree that does not
+# auto-clean. Drop it on exit (whatever claude's exit status) so the orchestrator
+# can tear the worktree down at integrate time with a plain `git worktree remove
+# -f` instead of a manual unlock + double-force dance.
+trap 'git worktree unlock "$worktree_dir" 2>/dev/null || true' EXIT
+
+# --- logging -----------------------------------------------------------------
+log_dir=".claude/logs"
+mkdir -p "$log_dir"
+# unique run id: issue + UTC timestamp, so re-delegations never clobber a log
+uid="${name}-$(date -u +%Y%m%dT%H%M%SZ)"
+log_file="${log_dir}/${uid}.jsonl"
+
+# --- subagent instruction (mirrors the template in CLAUDE.md) ----------------
+prompt="You are a subagent working on issue #${id} in the worktree at .claude/worktrees/${name}.
+
+1. Call get_issue(${id}) to read the full issue and acceptance criteria.
+2. Implement the required changes. Work ONLY within this worktree directory.
+3. Do not modify files outside your worktree.
+4. Do not create or switch branches.
+5. Run the project's checks (see Commands in CLAUDE.md) and make sure they pass.
+6. When complete, stage and commit all changes:
+     git add -A && git commit -m \"closes #${id}: <short description>\"
+7. Report back: summarize what you did and flag anything uncertain or incomplete."
+
+if [[ -n "$extra" ]]; then
+  prompt="${prompt}
+
+Additional instructions for this run:
+${extra}"
+fi
+
+echo "delegate: issue #${id} -> worktree ${name}, log ${log_file}" >&2
+
+# --output-format stream-json requires --verbose in headless (-p) mode.
+# pipefail (set above) makes the pipeline exit with claude's status, not tee's.
+claude --worktree "$name" -p "$prompt" \
+  --output-format stream-json \
+  --verbose \
+  | tee "$log_file"

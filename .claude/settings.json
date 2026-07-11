@@ -1,0 +1,34 @@
+{
+  "permissions": {
+    "allow": [
+      "Edit",
+      "Write",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git diff *)",
+      "Bash(git log *)",
+      "Bash(git status *)",
+      "Bash(git worktree *)",
+      "Bash(git branch *)",
+      "Bash(.claude/bins/delegate *)",
+      "Bash(.claude/bins/review *)",
+      "Bash(claude *)",
+      "Bash(jq *)",
+      "mcp__pit__pit_get_issue",
+      "mcp__pit__pit_list_issues",
+      "mcp__pit__pit_search_issues",
+      "mcp__pit__pit_update_issue",
+      "mcp__pit__pit_add_comment",
+      "mcp__pit__pit_create_issue",
+      "mcp__pit__pit_link_issues",
+      "mcp__pit__pit_unlink_issues"
+    ]
+  },
+  "enabledMcpjsonServers": [
+    "pit"
+  ],
+  "worktree": {
+    "baseRef": "head",
+    "symlinkDirectories": [".pit"]
+  }
+}
