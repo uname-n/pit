@@ -180,13 +180,10 @@ fn header(db: &Db, issue: i64) -> String {
     }
 }
 
-/// `#<id> <title>` — the compact tab-bar label for a run (title omitted if
-/// unknown). The display-width clamp happens at render time.
-fn tab_label(db: &Db, issue: i64) -> String {
-    match issue_title(db, issue) {
-        Some(title) => format!("#{issue} {title}"),
-        None => format!("#{issue}"),
-    }
+/// `#<id>` — the compact tab-bar label for a run. Just the issue number; the
+/// title lives in the body header, not the tab.
+fn tab_label(issue: i64) -> String {
+    format!("#{issue}")
 }
 
 /// The issue's title if it's still in the DB, else `None` (best-effort).
@@ -325,12 +322,7 @@ fn make_run(db: &Db, path: &Path) -> io::Result<Run> {
         .and_then(|n| n.to_str())
         .and_then(parse_issue_id)
         .unwrap_or(0);
-    Ok(Run::new(
-        issue,
-        tab_label(db, issue),
-        header(db, issue),
-        file,
-    ))
+    Ok(Run::new(issue, tab_label(issue), header(db, issue), file))
 }
 
 /// The full-screen controller. Owns the run tabs, the active tab index, the set
@@ -396,9 +388,20 @@ impl Dashboard {
             if let Ok(mut r) = make_run(db, &path) {
                 if is_active(db, r.issue) {
                     r.poll_file(); // drain the backlog into the new tab
-                    self.runs.push(r);
+                    self.add_run(r);
                 }
             }
+        }
+    }
+
+    /// Add `run` as a tab, superseding any existing tab for the same issue so a
+    /// re-delegated issue shows only its most recent run. Candidates are
+    /// discovered in filename (timestamp) order, so the later one wins; replacing
+    /// in place keeps the tab in its original slot and leaves `active` untouched.
+    fn add_run(&mut self, run: Run) {
+        match self.runs.iter().position(|r| r.issue == run.issue) {
+            Some(i) => self.runs[i] = run,
+            None => self.runs.push(run),
         }
     }
 
@@ -712,15 +715,24 @@ fn render_header(f: &mut Frame, area: Rect, header: &str, theme: &TailTheme) {
     );
 }
 
-/// The tab bar: one chip per live run, the active one reversed + bold. Runs that
-/// are mid-think get a `•` prefix so activity is visible without switching to
-/// them. The row is clipped to the terminal width by the Paragraph.
+/// The tab bar: one chip per live run, the active one reversed + bold. A finished
+/// run's label takes the `result` color so a completed agent is visible at a
+/// glance. Runs that are mid-think get a `•` prefix so activity is visible
+/// without switching to them. The row is clipped to the terminal width by the
+/// Paragraph.
 fn render_tabs(f: &mut Frame, area: Rect, dash: &Dashboard) {
     let theme = dash.theme;
     let mut spans: Vec<Span<'static>> = Vec::new();
     for (i, run) in dash.runs.iter().enumerate() {
         let active = i == dash.active;
-        let mut st = Style::default().fg(if active { theme.header } else { theme.status });
+        let fg = if run.done {
+            theme.result
+        } else if active {
+            theme.header
+        } else {
+            theme.status
+        };
+        let mut st = Style::default().fg(fg);
         if active {
             st = st.add_modifier(Modifier::BOLD | Modifier::REVERSED);
         }
