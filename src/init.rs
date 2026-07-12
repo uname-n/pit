@@ -1,11 +1,11 @@
 use std::fs;
 use std::path::Path;
 
-const CLAUDE_MD: &str = include_str!("../CLAUDE.md");
-const MCP_JSON: &str = include_str!("../.mcp.json");
-const SETTINGS_JSON: &str = include_str!("../.claude/settings.json");
-const DELEGATE: &str = include_str!("../.claude/bins/delegate");
-const REVIEW: &str = include_str!("../.claude/bins/review");
+const CLAUDE_MD: &str = include_str!("../template/CLAUDE.md");
+const MCP_JSON: &str = include_str!("../template/.mcp.json");
+const SETTINGS_JSON: &str = include_str!("../template/.claude/settings.json");
+const DELEGATE: &str = include_str!("../template/.claude/bins/delegate");
+const REVIEW: &str = include_str!("../template/.claude/bins/review");
 
 /// gitignore entries pit's orchestration workflow relies on. Note `.claude/bins/`
 /// is intentionally NOT ignored — the delegate/review tools are tracked (see CLAUDE.md).
@@ -49,7 +49,7 @@ pub fn run() -> Result<(), String> {
         }
     }
 
-    println!("pit: project created");
+    println!("pit: project initialized");
     ensure_gitignore()
 }
 
