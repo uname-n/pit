@@ -35,6 +35,11 @@ use std::{
 const DIM: Color = Color::DarkGray;
 const MUTED: Color = Color::Gray;
 
+// Selection fill: a soft grey background instead of full reverse-video, so the
+// highlighted card reads as selected without the harsh inverted block. Kept
+// flat to match the tail view's chrome.
+const SELECT_BG: Color = Color::Rgb(58, 58, 58);
+
 struct IssueCard {
     id: i64,
     title: String,
@@ -403,12 +408,12 @@ fn render_header(f: &mut Frame, area: Rect, app: &App) {
 
     let mut left = vec![
         Span::styled(
-            " pit ",
+            "pit",
             Style::default()
                 .fg(app.theme.open)
-                .add_modifier(Modifier::REVERSED | Modifier::BOLD),
+                .add_modifier(Modifier::BOLD),
         ),
-        Span::raw("  "),
+        Span::raw(" · "),
         Span::styled("read-only", Style::default().fg(app.theme.muted)),
         Span::raw(" · "),
         Span::styled(
@@ -434,8 +439,10 @@ fn render_header(f: &mut Frame, area: Rect, app: &App) {
 fn render_footer(f: &mut Frame, area: Rect, app: &App) {
     let key = |k: &'static str| {
         Span::styled(
-            format!(" {k} "),
-            Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD),
+            k,
+            Style::default()
+                .fg(app.theme.muted)
+                .add_modifier(Modifier::BOLD),
         )
     };
     let dim = app.theme.dim;
@@ -557,10 +564,10 @@ fn render_column(f: &mut Frame, area: Rect, col: &mut Column, is_selected: bool,
 
     let mut state_for_render;
     let state_ref = if is_selected {
-        // Reverse-video selection inherits the terminal's own fg/bg rather than
-        // pinning a background color.
+        // Soft grey fill marks the selection instead of reverse-video, so the
+        // card reads as selected without an inverted block.
         list = list
-            .highlight_style(Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD))
+            .highlight_style(Style::default().bg(SELECT_BG).add_modifier(Modifier::BOLD))
             .highlight_symbol("▌ ");
         &mut col.state
     } else {
