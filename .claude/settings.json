@@ -10,6 +10,8 @@
       "Bash(git status *)",
       "Bash(git worktree *)",
       "Bash(git branch *)",
+      "Bash(cp *)",
+      "Bash(mkdir *)",
       "Bash(.claude/bins/delegate *)",
       "Bash(.claude/bins/review *)",
       "Bash(claude *)",
