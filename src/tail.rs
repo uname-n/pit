@@ -11,13 +11,14 @@ use crossterm::{
 use ratatui::{
     Frame, Terminal,
     backend::{Backend, CrosstermBackend},
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::Paragraph,
 };
 use serde_json::{Value, json};
 use std::{
+    collections::HashSet,
     fs::{self, File},
     io::{self, BufRead, BufReader},
     path::{Path, PathBuf},
@@ -25,30 +26,57 @@ use std::{
 };
 
 // Polling cadence and bounds for the follow loop. The loop is deliberately
-// bounded (no unbounded `tail -f`): it stops draining on the run's terminal
+// bounded (no unbounded `tail -f`): it stops draining a run on its terminal
 // `result` event, and otherwise gives up after IDLE_TIMEOUT of no new bytes so
 // an interrupted/rate-limited run (which never emits `result`) can't follow
 // forever. The idle clock resets whenever new bytes arrive, so an actively
-// streaming run keeps going. Once draining stops the UI stays up until `q`.
+// streaming run keeps going.
 const POLL_INTERVAL: Duration = Duration::from_millis(400);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(360); // ~6 min with no new bytes
 const MAX_LINES_PER_POLL: u32 = 100_000;
 const MAX_DIR_ENTRIES: u32 = 100_000;
 
-/// Follow the most recent run log for `issue` in a full-screen TUI: the
-/// subagent's text replies render as markdown under a `›` bullet (headers,
-/// emphasis, inline/fenced code, lists), its tool calls appear as truncated `◦`
-/// one-liners, and the final report closes the stream. `log_dir` is where the
-/// orchestration helper tees the transcripts.
-pub fn run(db: &Db, issue: i64, log_dir: &Path, theme: &TailTheme) -> io::Result<()> {
-    let Some(path) = newest_log(log_dir, issue)? else {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            format!("no logs for issue #{issue} in {}", log_dir.display()),
-        ));
+// Dashboard (`pit tail`, no issue) discovery cadence and freshness window. The
+// directory is rescanned every SCAN_INTERVAL for log files whose mtime is within
+// FRESH_WINDOW — a live run touches its log continuously (content, tool calls,
+// `thinking_tokens` heartbeats), so a tight window catches every in-progress run
+// while excluding logs that stopped long ago (completed or interrupted).
+const SCAN_INTERVAL: Duration = Duration::from_secs(1);
+const FRESH_WINDOW: Duration = Duration::from_secs(90);
+const TAB_LABEL_MAX: usize = 28;
+
+/// Follow subagent run logs in a full-screen TUI. With `Some(issue)` this pins to
+/// that issue's newest `.claude/logs/issue-<id>-*.jsonl` and stays up until the
+/// user quits (the classic single-run tail). With `None` it opens the live
+/// dashboard: every active issue's run gets a tab (switch with ←/→), a tab
+/// auto-closes when its issue is closed — not merely when its log finishes, so
+/// the final report lingers while the issue is wrapped up — and with nothing
+/// active the screen waits for new runs to appear. In both cases the subagent's
+/// text replies render as
+/// markdown under a `›` bullet, tool calls appear as `◦` one-liners, and the
+/// final report closes the stream. `log_dir` is where the orchestration helper
+/// tees the transcripts.
+pub fn run(db: &Db, issue: Option<i64>, log_dir: &Path, theme: &TailTheme) -> io::Result<()> {
+    let mut dash = match issue {
+        // Single-run mode: open the specific newest log even if it has already
+        // finished, and never auto-close it — the user asked for this run.
+        Some(id) => {
+            let Some(path) = newest_log(log_dir, id)? else {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("no logs for issue #{id} in {}", log_dir.display()),
+                ));
+            };
+            let mut dash = Dashboard::new(log_dir, *theme, false);
+            let mut r = make_run(db, &path)?;
+            r.poll_file(); // initial drain of whatever is already on disk
+            dash.seen.insert(path);
+            dash.runs.push(r);
+            dash
+        }
+        // Dashboard mode: start empty and let discovery fill in live runs.
+        None => Dashboard::new(log_dir, *theme, true),
     };
-    let file = File::open(&path)?;
-    let mut app = App::new(header(db, issue), file, *theme);
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -56,7 +84,7 @@ pub fn run(db: &Db, issue: i64, log_dir: &Path, theme: &TailTheme) -> io::Result
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let res = event_loop(&mut terminal, &mut app);
+    let res = event_loop(&mut terminal, &mut dash, db);
 
     disable_raw_mode()?;
     execute!(
@@ -100,16 +128,90 @@ fn newest_log(dir: &Path, issue: i64) -> io::Result<Option<PathBuf>> {
     Ok(best.map(|(_, p)| p))
 }
 
-/// `pit · #<id> · <title>` — best-effort; if the issue isn't in the DB (the log
-/// can outlive its row) the title is omitted rather than erroring.
-fn header(db: &Db, issue: i64) -> String {
-    match db.get_issue(&json!({ "id": issue })) {
-        Ok(v) => match v.get("title").and_then(Value::as_str) {
-            Some(title) => format!("pit · #{issue} · {title}"),
-            None => format!("pit · #{issue}"),
-        },
-        Err(_) => format!("pit · #{issue}"),
+/// Every `issue-<id>-*.jsonl` in `dir` whose mtime is within [`FRESH_WINDOW`],
+/// paired with its parsed issue id, sorted by (issue id, filename) for a stable
+/// tab order. These are the dashboard's in-progress *candidates*; whether one is
+/// actually still running is decided after opening it (has it hit `result`?). A
+/// missing directory yields an empty list — the dashboard just keeps waiting.
+fn fresh_logs(dir: &Path) -> Vec<(i64, PathBuf)> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut out: Vec<(i64, PathBuf)> = Vec::new();
+    for entry in entries.take(MAX_DIR_ENTRIES as usize) {
+        let Ok(entry) = entry else { continue };
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if !name.starts_with("issue-") || !name.ends_with(".jsonl") {
+            continue;
+        }
+        let Some(id) = parse_issue_id(name) else { continue };
+        // `elapsed()` errors only if mtime is in the future (clock skew); treat
+        // that as fresh rather than dropping a genuinely active run.
+        let fresh = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .map(|t| t.elapsed().map(|d| d < FRESH_WINDOW).unwrap_or(true))
+            .unwrap_or(false);
+        if fresh {
+            out.push((id, entry.path()));
+        }
     }
+    out.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    out
+}
+
+/// Extract `<id>` from an `issue-<id>-<timestamp>.jsonl` filename. Matches the
+/// digits between the `issue-` prefix and the next `-`, so `issue-12-...` parses
+/// to `12` (never `1`).
+fn parse_issue_id(name: &str) -> Option<i64> {
+    let rest = name.strip_prefix("issue-")?;
+    let end = rest.find('-')?;
+    rest[..end].parse().ok()
+}
+
+/// `pit · #<id> · <title>` — the body header for a run. Best-effort: if the issue
+/// isn't in the DB (the log can outlive its row) the title is omitted rather
+/// than erroring.
+fn header(db: &Db, issue: i64) -> String {
+    match issue_title(db, issue) {
+        Some(title) => format!("pit · #{issue} · {title}"),
+        None => format!("pit · #{issue}"),
+    }
+}
+
+/// `#<id> <title>` — the compact tab-bar label for a run (title omitted if
+/// unknown). The display-width clamp happens at render time.
+fn tab_label(db: &Db, issue: i64) -> String {
+    match issue_title(db, issue) {
+        Some(title) => format!("#{issue} {title}"),
+        None => format!("#{issue}"),
+    }
+}
+
+/// The issue's title if it's still in the DB, else `None` (best-effort).
+fn issue_title(db: &Db, issue: i64) -> Option<String> {
+    let v = db.get_issue(&json!({ "id": issue })).ok()?;
+    v.get("title")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+/// Whether `issue` is still being worked — i.e. present in the DB with a status
+/// other than `closed`. This, not the log's terminal `result` event, is what
+/// keeps a dashboard tab open: a subagent can finish streaming (log marked done)
+/// while its issue lingers in `in-progress` awaiting integration, and we want
+/// the final report to stay visible until the issue is actually closed. A
+/// missing issue (deleted, or never tracked) counts as not-active.
+fn is_active(db: &Db, issue: i64) -> bool {
+    matches!(
+        db.get_issue(&json!({ "id": issue }))
+            .ok()
+            .as_ref()
+            .and_then(|v| v.get("status"))
+            .and_then(Value::as_str),
+        Some(s) if s != "closed"
+    )
 }
 
 /// One streamed event worth showing. `Msg` is assistant prose (word-wrapped),
@@ -121,7 +223,12 @@ enum Entry {
     Report(String),
 }
 
-struct App {
+/// Per-log follow state: one `Run` tracks a single transcript file, its parsed
+/// entries, scroll position, and whether it has finished. The dashboard owns a
+/// `Vec<Run>` (a tab each); single-run mode owns exactly one.
+struct Run {
+    issue: i64,
+    label: String,
     header: String,
     entries: Vec<Entry>,
     reader: BufReader<File>,
@@ -134,7 +241,6 @@ struct App {
     // as new entries arrive; any upward scroll releases it, and scrolling back to
     // the bottom re-engages it.
     stick: bool,
-    view_h: u16,
     done: bool,
     // True only while the tail of the stream is a `thinking_tokens` heartbeat —
     // i.e. the subagent is mid-think and hasn't yet emitted the resulting
@@ -142,31 +248,30 @@ struct App {
     thinking: bool,
     status: Option<String>,
     last_data: Instant,
-    theme: TailTheme,
 }
 
-impl App {
-    fn new(header: String, file: File, theme: TailTheme) -> Self {
+impl Run {
+    fn new(issue: i64, label: String, header: String, file: File) -> Self {
         Self {
+            issue,
+            label,
             header,
             entries: Vec::new(),
             reader: BufReader::new(file),
             buf: String::new(),
             scroll: 0,
             stick: true,
-            view_h: 0,
             done: false,
             thinking: false,
             status: None,
             last_data: Instant::now(),
-            theme,
         }
     }
 
     /// Drain the currently-available complete lines into `entries`. A partial
     /// (non-newline-terminated) trailing line is left in `buf` for the next poll.
     /// Stops draining once the terminal `result` event or the idle deadline is
-    /// reached; either way the UI stays up until the user quits.
+    /// reached, marking the run `done` in either case.
     fn poll_file(&mut self) {
         if self.done {
             return;
@@ -206,6 +311,119 @@ impl App {
         } else if self.last_data.elapsed() >= IDLE_TIMEOUT {
             self.status = Some("no result event (run interrupted or idle)".into());
             self.done = true;
+        }
+    }
+}
+
+/// Construct a `Run` for `path` (opening the file and resolving its issue id,
+/// body header, and tab label) without draining it yet. The caller decides when
+/// to `poll_file`.
+fn make_run(db: &Db, path: &Path) -> io::Result<Run> {
+    let file = File::open(path)?;
+    let issue = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .and_then(parse_issue_id)
+        .unwrap_or(0);
+    Ok(Run::new(
+        issue,
+        tab_label(db, issue),
+        header(db, issue),
+        file,
+    ))
+}
+
+/// The full-screen controller. Owns the run tabs, the active tab index, the set
+/// of already-discovered log paths, and the shared theme. `discover`/`auto_close`
+/// are both true for the live dashboard and both false for single-run mode.
+struct Dashboard {
+    log_dir: PathBuf,
+    theme: TailTheme,
+    runs: Vec<Run>,
+    active: usize,
+    // Every log path ever turned into a tab (or skipped for already being
+    // finished), so a rescan never re-adds one. Re-delegating an issue writes a
+    // new timestamped path, which correctly reads as a new run.
+    seen: HashSet<PathBuf>,
+    view_h: u16,
+    last_scan: Instant,
+    discover: bool,
+    auto_close: bool,
+}
+
+impl Dashboard {
+    fn new(log_dir: &Path, theme: TailTheme, dashboard: bool) -> Self {
+        Self {
+            log_dir: log_dir.to_path_buf(),
+            theme,
+            runs: Vec::new(),
+            active: 0,
+            seen: HashSet::new(),
+            view_h: 0,
+            // Force a scan on the first loop iteration.
+            last_scan: Instant::now() - SCAN_INTERVAL,
+            discover: dashboard,
+            auto_close: dashboard,
+        }
+    }
+
+    fn active_run_mut(&mut self) -> Option<&mut Run> {
+        self.runs.get_mut(self.active)
+    }
+
+    fn next_tab(&mut self) {
+        if !self.runs.is_empty() {
+            self.active = (self.active + 1) % self.runs.len();
+        }
+    }
+
+    fn prev_tab(&mut self) {
+        if !self.runs.is_empty() {
+            self.active = (self.active + self.runs.len() - 1) % self.runs.len();
+        }
+    }
+
+    /// Rescan the log directory for fresh candidates, adding a tab for each
+    /// newly-seen run whose issue is still active (present and not `closed`). A
+    /// candidate for a closed/absent issue is recorded as seen but never shown —
+    /// the dashboard tracks issues being worked, not every log on disk.
+    fn discover(&mut self, db: &Db) {
+        for (_, path) in fresh_logs(&self.log_dir) {
+            if self.seen.contains(&path) {
+                continue;
+            }
+            self.seen.insert(path.clone());
+            if let Ok(mut r) = make_run(db, &path) {
+                if is_active(db, r.issue) {
+                    r.poll_file(); // drain the backlog into the new tab
+                    self.runs.push(r);
+                }
+            }
+        }
+    }
+
+    /// Close tabs whose issue is no longer active — moved to `closed` (or
+    /// deleted) in the DB (dashboard only). A run staying open here even after its
+    /// log is `done` is intentional: the final report stays visible while the
+    /// issue is wrapped up. Removing a tab at or before the active one shifts the
+    /// selection so the *same* run stays focused where possible.
+    fn reap(&mut self, db: &Db) {
+        if !self.auto_close {
+            return;
+        }
+        let mut i = 0;
+        while i < self.runs.len() {
+            if is_active(db, self.runs[i].issue) {
+                i += 1;
+            } else {
+                self.runs.remove(i);
+                if i < self.active {
+                    self.active -= 1;
+                }
+            }
+        }
+        if self.active >= self.runs.len() {
+            self.active = self.runs.len().saturating_sub(1);
         }
     }
 }
@@ -302,22 +520,36 @@ fn tool_summary(input: Option<&Value>) -> String {
     String::new()
 }
 
-fn event_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<()> {
+fn event_loop<B: Backend>(
+    terminal: &mut Terminal<B>,
+    dash: &mut Dashboard,
+    db: &Db,
+) -> io::Result<()> {
     loop {
-        app.poll_file();
-        terminal.draw(|f| render(f, app))?;
+        if dash.discover && dash.last_scan.elapsed() >= SCAN_INTERVAL {
+            dash.discover(db);
+            dash.last_scan = Instant::now();
+        }
+        for run in &mut dash.runs {
+            run.poll_file();
+        }
+        dash.reap(db);
 
-        // Once following has stopped there is nothing new to drain, so we only
-        // wake often enough to stay responsive to keys.
-        let timeout = if app.done {
+        terminal.draw(|f| render(f, dash))?;
+
+        // The dashboard keeps polling at POLL_INTERVAL so new runs and new bytes
+        // surface promptly. Single-run mode, once its one run is finished, has
+        // nothing left to drain — it only needs to stay responsive to keys.
+        let idle = !dash.discover && dash.runs.iter().all(|r| r.done);
+        let timeout = if idle {
             Duration::from_millis(500)
         } else {
             POLL_INTERVAL
         };
         if event::poll(timeout)? {
             match event::read()? {
-                Event::Key(key) if handle_key(app, key) => return Ok(()),
-                Event::Mouse(m) => handle_mouse(app, m),
+                Event::Key(key) if handle_key(dash, key) => return Ok(()),
+                Event::Mouse(m) => handle_mouse(dash, m),
                 _ => {}
             }
         }
@@ -325,8 +557,9 @@ fn event_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Resu
 }
 
 /// Dispatch a key press. Returns `true` when the app should quit. Non-press key
-/// events (repeat/release) are ignored.
-fn handle_key(app: &mut App, key: KeyEvent) -> bool {
+/// events (repeat/release) are ignored. ←/→ (and `h`/`l`) switch tabs; the
+/// scroll keys act on the active run.
+fn handle_key(dash: &mut Dashboard, key: KeyEvent) -> bool {
     if key.kind != KeyEventKind::Press {
         return false;
     }
@@ -335,9 +568,23 @@ fn handle_key(app: &mut App, key: KeyEvent) -> bool {
     {
         return true;
     }
-    let page = app.view_h.max(1);
     match key.code {
         KeyCode::Char('q') | KeyCode::Esc => return true,
+        KeyCode::Left | KeyCode::Char('h') => {
+            dash.prev_tab();
+            return false;
+        }
+        KeyCode::Right | KeyCode::Char('l') => {
+            dash.next_tab();
+            return false;
+        }
+        _ => {}
+    }
+    let page = dash.view_h.max(1);
+    let Some(app) = dash.active_run_mut() else {
+        return false;
+    };
+    match key.code {
         // Downward scrolls leave `stick` alone — render re-engages it if the move
         // lands at the bottom; upward scrolls always release it.
         KeyCode::Down | KeyCode::Char('j') => app.scroll = app.scroll.saturating_add(1),
@@ -360,7 +607,10 @@ fn handle_key(app: &mut App, key: KeyEvent) -> bool {
     false
 }
 
-fn handle_mouse(app: &mut App, m: MouseEvent) {
+fn handle_mouse(dash: &mut Dashboard, m: MouseEvent) {
+    let Some(app) = dash.active_run_mut() else {
+        return;
+    };
     match m.kind {
         MouseEventKind::ScrollDown => app.scroll = app.scroll.saturating_add(3),
         MouseEventKind::ScrollUp => {
@@ -371,10 +621,20 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
     }
 }
 
-fn render(f: &mut Frame, app: &mut App) {
-    let theme = app.theme; // Copy — avoids borrow conflicts with the mutations below.
-    // header · pad · body · pad · footer — the blank pad rows breathe a little
-    // space between the header title and the body, and the body and quit line.
+/// Top-level render: the live dashboard (with a tab bar and waiting screen) or
+/// the classic single-run view.
+fn render(f: &mut Frame, dash: &mut Dashboard) {
+    if dash.discover {
+        render_dashboard(f, dash);
+    } else {
+        render_single(f, dash);
+    }
+}
+
+/// The single-run layout: header · pad · body · pad · footer. Preserved verbatim
+/// from the pre-dashboard tail so `pit tail <issue>` looks exactly as before.
+fn render_single(f: &mut Frame, dash: &mut Dashboard) {
+    let theme = dash.theme;
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -386,22 +646,119 @@ fn render(f: &mut Frame, app: &mut App) {
         ])
         .split(f.area());
 
-    // Header — the whole line carries the header accent.
-    let head = truncate(&app.header, chunks[0].width as usize);
+    let header = dash.runs.first().map(|r| r.header.clone()).unwrap_or_default();
+    render_header(f, chunks[0], &header, &theme);
+
+    let body = chunks[2];
+    dash.view_h = body.height;
+    let status = if let Some(run) = dash.runs.get_mut(0) {
+        render_body(f, body, run, &theme);
+        run.status.clone()
+    } else {
+        None
+    };
+
+    render_footer(f, chunks[4], &theme, status.as_deref(), None);
+}
+
+/// The dashboard layout: header · tabs · pad · body · pad · footer. With no live
+/// runs the body shows a centered "waiting" notice and discovery keeps polling.
+fn render_dashboard(f: &mut Frame, dash: &mut Dashboard) {
+    let theme = dash.theme;
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // header
+            Constraint::Length(1), // tab bar
+            Constraint::Length(1), // pad
+            Constraint::Min(0),    // body
+            Constraint::Length(1), // pad
+            Constraint::Length(1), // footer
+        ])
+        .split(f.area());
+
+    let header = dash
+        .runs
+        .get(dash.active)
+        .map(|r| r.header.clone())
+        .unwrap_or_else(|| "pit · tail".to_string());
+    render_header(f, chunks[0], &header, &theme);
+    render_tabs(f, chunks[1], dash);
+
+    let body = chunks[3];
+    dash.view_h = body.height;
+    let active = dash.active;
+    let status = if let Some(run) = dash.runs.get_mut(active) {
+        render_body(f, body, run, &theme);
+        run.status.clone()
+    } else {
+        render_waiting(f, body, &theme);
+        None
+    };
+
+    let count = dash.runs.len();
+    render_footer(f, chunks[5], &theme, status.as_deref(), Some(count));
+}
+
+/// The header line — the whole row carries the header accent, bold.
+fn render_header(f: &mut Frame, area: Rect, header: &str, theme: &TailTheme) {
+    let head = truncate(header, area.width as usize);
     f.render_widget(
         Paragraph::new(Line::from(Span::styled(
             head,
             Style::default().fg(theme.header).add_modifier(Modifier::BOLD),
         ))),
-        chunks[0],
+        area,
     );
+}
 
-    // Body — every entry as a themed line, word-wrapped, scrolled.
-    let body = chunks[2];
-    app.view_h = body.height;
-    let mut lines = build_lines(&app.entries, body.width, &theme);
+/// The tab bar: one chip per live run, the active one reversed + bold. Runs that
+/// are mid-think get a `•` prefix so activity is visible without switching to
+/// them. The row is clipped to the terminal width by the Paragraph.
+fn render_tabs(f: &mut Frame, area: Rect, dash: &Dashboard) {
+    let theme = dash.theme;
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    for (i, run) in dash.runs.iter().enumerate() {
+        let active = i == dash.active;
+        let mut st = Style::default().fg(if active { theme.header } else { theme.status });
+        if active {
+            st = st.add_modifier(Modifier::BOLD | Modifier::REVERSED);
+        }
+        let dot = if run.thinking && !run.done { "• " } else { "" };
+        let label = truncate(&run.label, TAB_LABEL_MAX);
+        spans.push(Span::styled(format!(" {dot}{label} "), st));
+        spans.push(Span::raw(" "));
+    }
+    f.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// The "nothing running" notice, centered in the body while discovery polls on.
+fn render_waiting(f: &mut Frame, area: Rect, theme: &TailTheme) {
+    if area.height == 0 {
+        return;
+    }
+    let row = Rect {
+        x: area.x,
+        y: area.y + area.height / 2,
+        width: area.width,
+        height: 1,
+    };
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "waiting for in-progress runs…",
+            Style::default().fg(theme.status),
+        )))
+        .alignment(Alignment::Center),
+        row,
+    );
+}
+
+/// Render one run's transcript into `area`, updating its scroll/stick state. The
+/// body is every entry as a themed line, word-wrapped, scrolled.
+fn render_body(f: &mut Frame, area: Rect, app: &mut Run, theme: &TailTheme) {
+    let mut lines = build_lines(&app.entries, area.width, theme);
     // Ephemeral activity indicator: while `thinking_tokens` heartbeats are
-    // streaming (see `App::thinking`) the subagent is mid-think, so pin a dim
+    // streaming (see `Run::thinking`) the subagent is mid-think, so pin a dim
     // `• thinking…` line to the tail. It's not an `Entry`, so it never persists —
     // it vanishes the moment the next real event lands and `thinking` clears.
     if app.thinking && !app.done {
@@ -410,10 +767,10 @@ fn render(f: &mut Frame, app: &mut App) {
             Style::default().fg(theme.status),
         )));
     }
-    // Lines are pre-wrapped (prose in `push_prose`, tools truncated), so each is
-    // exactly one visual row — the total is just the count.
+    // Lines are pre-wrapped (prose in `push_markdown`, tools truncated), so each
+    // is exactly one visual row — the total is just the count.
     let total = u16::try_from(lines.len()).unwrap_or(u16::MAX);
-    let max_scroll = total.saturating_sub(body.height);
+    let max_scroll = total.saturating_sub(area.height);
     if app.stick {
         app.scroll = max_scroll;
     } else {
@@ -424,9 +781,46 @@ fn render(f: &mut Frame, app: &mut App) {
             app.stick = true; // Scrolled back to the bottom — resume following.
         }
     }
-    f.render_widget(Paragraph::new(lines).scroll((app.scroll, 0)), body);
+    f.render_widget(Paragraph::new(lines).scroll((app.scroll, 0)), area);
+}
 
-    render_footer(f, chunks[4], app);
+/// The footer: the quit key, the tab-switch hint (dashboard only, when there is
+/// more than one run), an optional run count, and the active run's status.
+fn render_footer(
+    f: &mut Frame,
+    area: Rect,
+    theme: &TailTheme,
+    status: Option<&str>,
+    runs: Option<usize>,
+) {
+    let accent = Style::default().fg(theme.header);
+    let mut spans = vec![
+        Span::styled("q", accent.add_modifier(Modifier::BOLD)),
+        Span::styled(" · ", accent),
+        Span::styled("quit", accent),
+    ];
+    if runs.is_some_and(|n| n > 1) {
+        spans.push(Span::styled("    ", accent));
+        spans.push(Span::styled("← →", accent.add_modifier(Modifier::BOLD)));
+        spans.push(Span::styled(" · ", accent));
+        spans.push(Span::styled("switch", accent));
+    }
+    if let Some(n) = runs {
+        let label = if n == 1 { "run" } else { "runs" };
+        spans.push(Span::styled("    ", accent));
+        spans.push(Span::styled(
+            format!("{n} {label}"),
+            Style::default().fg(theme.status),
+        ));
+    }
+    if let Some(status) = status {
+        spans.push(Span::styled("   ", accent));
+        spans.push(Span::styled(
+            status.to_string(),
+            Style::default().fg(theme.status),
+        ));
+    }
+    f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 /// Flatten the entry list into styled, prefix-marked lines pre-wrapped to
@@ -539,23 +933,6 @@ fn emit_block(
         spans.extend(row);
         lines.push(Line::from(spans));
     }
-}
-
-fn render_footer(f: &mut Frame, area: Rect, app: &App) {
-    let accent = Style::default().fg(app.theme.header);
-    let mut spans = vec![
-        Span::styled("q", accent.add_modifier(Modifier::BOLD)),
-        Span::styled(" · ", accent),
-        Span::styled("quit", accent),
-    ];
-    if let Some(status) = &app.status {
-        spans.push(Span::styled("   ", accent));
-        spans.push(Span::styled(
-            status.clone(),
-            Style::default().fg(app.theme.status),
-        ));
-    }
-    f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 /// Word-wrap a run of styled spans into rows of at most `width` display columns,
@@ -780,6 +1157,48 @@ mod tests {
 
     fn render_msg(md: &str, width: u16) -> Vec<Line<'static>> {
         build_lines(&[Entry::Msg(md.to_string())], width, &theme())
+    }
+
+    #[test]
+    fn parses_issue_id_from_log_name() {
+        assert_eq!(parse_issue_id("issue-1-20260711T203209Z.jsonl"), Some(1));
+        assert_eq!(parse_issue_id("issue-12-20260711T203209Z.jsonl"), Some(12));
+        assert_eq!(parse_issue_id("issue-.jsonl"), None);
+        assert_eq!(parse_issue_id("notissue-1-.jsonl"), None);
+        assert_eq!(parse_issue_id("issue-x-1.jsonl"), None);
+    }
+
+    // A Run over an on-disk transcript, used to exercise the in-progress
+    // detection that drives tab creation/closing.
+    fn run_over(lines: &[&str]) -> Run {
+        use std::io::Write;
+        let dir = std::env::temp_dir();
+        // Unique-ish name without Instant/rand: hash the content.
+        let name = format!("pit-tail-test-{}.jsonl", lines.concat().len());
+        let path = dir.join(name);
+        let mut f = File::create(&path).unwrap();
+        for l in lines {
+            writeln!(f, "{l}").unwrap();
+        }
+        Run::new(1, "#1".into(), "pit · #1".into(), File::open(&path).unwrap())
+    }
+
+    #[test]
+    fn run_without_result_is_still_in_progress() {
+        let assistant = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}]}}"#;
+        let mut run = run_over(&[assistant]);
+        run.poll_file();
+        assert!(!run.done, "no result event yet — run is live");
+        assert_eq!(run.entries.len(), 1);
+    }
+
+    #[test]
+    fn run_with_result_is_finished() {
+        let assistant = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}]}}"#;
+        let result = r#"{"type":"result","result":"all done"}"#;
+        let mut run = run_over(&[assistant, result]);
+        run.poll_file();
+        assert!(run.done, "result event terminates the run");
     }
 
     #[test]

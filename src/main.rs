@@ -28,10 +28,13 @@ struct Cli {
 enum Command {
     /// Kanban style read-only board
     Kanban,
-    /// Follow assistant text from an issue's most recent run log
+    /// Follow assistant text from run logs. With an issue id, follows that
+    /// issue's most recent run; with no argument, opens the live dashboard of
+    /// all in-progress runs (switch tabs with ←/→).
     Tail {
-        /// Issue id whose newest .claude/logs/issue-<id>-*.jsonl to follow
-        issue: i64,
+        /// Issue id whose newest .claude/logs/issue-<id>-*.jsonl to follow;
+        /// omit to watch every in-progress run in the dashboard
+        issue: Option<i64>,
     },
     /// Scaffold orchestration config files
     Init,
