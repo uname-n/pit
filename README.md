@@ -114,8 +114,9 @@ pit · #2 · Core data model: ...
 q · quit
 ```
 
-The subagent's prose word-wraps under a `›` bullet, its tool calls appear as truncated `◦`
-one-liners (thinking is skipped), and the final report closes the stream. Scroll with
+The subagent's prose renders as markdown (headers, emphasis, inline/fenced code, lists)
+under a `›` bullet, its tool calls appear as truncated `◦` one-liners, and a dim `• thinking…`
+line appears at the tail while the run is mid-thought. The final report closes the stream. Scroll with
 `↑`/`↓`, `PgUp`/`PgDn`, `g`/`G`; scrolling back to the bottom re-pins to the live tail. Press
 `q` to quit. Colors are configurable in the `tail` section of `.pit/settings.json` (`header`,
 `message`, `tool`, `status`, and `result` for the final report), separate from the board's
