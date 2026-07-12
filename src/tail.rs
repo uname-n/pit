@@ -717,9 +717,7 @@ fn render_header(f: &mut Frame, area: Rect, header: &str, theme: &TailTheme) {
 
 /// The tab bar: one chip per live run, the active one reversed + bold. A finished
 /// run's label takes the `result` color so a completed agent is visible at a
-/// glance. Runs that are mid-think get a `•` prefix so activity is visible
-/// without switching to them. The row is clipped to the terminal width by the
-/// Paragraph.
+/// glance. The row is clipped to the terminal width by the Paragraph.
 fn render_tabs(f: &mut Frame, area: Rect, dash: &Dashboard) {
     let theme = dash.theme;
     let mut spans: Vec<Span<'static>> = Vec::new();
@@ -736,9 +734,8 @@ fn render_tabs(f: &mut Frame, area: Rect, dash: &Dashboard) {
         if active {
             st = st.add_modifier(Modifier::BOLD | Modifier::REVERSED);
         }
-        let dot = if run.thinking && !run.done { "• " } else { "" };
         let label = truncate(&run.label, TAB_LABEL_MAX);
-        spans.push(Span::styled(format!(" {dot}{label} "), st));
+        spans.push(Span::styled(format!(" {label} "), st));
         spans.push(Span::raw(" "));
     }
     f.render_widget(Paragraph::new(Line::from(spans)), area);
