@@ -27,6 +27,7 @@ const DEF_TAIL_HEADER: &str = "#b2b2b2";
 const DEF_TAIL_MESSAGE: &str = "#e0cfc2";
 const DEF_TAIL_TOOL: &str = "#6c6c6c";
 const DEF_TAIL_STATUS: &str = "#6c6c6c";
+const DEF_TAIL_RESULT: &str = "#b3728f";
 
 /// Every resolved UI theme parsed from the settings file.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -60,6 +61,8 @@ pub struct TailTheme {
     pub tool: Color,
     /// The dim interrupted/idle status note.
     pub status: Color,
+    /// The final result report, colored to stand out from prose.
+    pub result: Color,
 }
 
 /// Top-level JSON shape. `#[serde(default)]` lets a file omit either the
@@ -152,6 +155,8 @@ struct RawTail {
     tool: String,
     #[serde(default = "d_tail_status")]
     status: String,
+    #[serde(default = "d_tail_result")]
+    result: String,
 }
 
 fn d_tail_header() -> String {
@@ -166,6 +171,9 @@ fn d_tail_tool() -> String {
 fn d_tail_status() -> String {
     DEF_TAIL_STATUS.to_string()
 }
+fn d_tail_result() -> String {
+    DEF_TAIL_RESULT.to_string()
+}
 
 impl Default for RawTail {
     fn default() -> Self {
@@ -174,6 +182,7 @@ impl Default for RawTail {
             message: d_tail_message(),
             tool: d_tail_tool(),
             status: d_tail_status(),
+            result: d_tail_result(),
         }
     }
 }
@@ -200,6 +209,7 @@ impl RawSettings {
             message: parse_hex("tail.message", &t.message)?,
             tool: parse_hex("tail.tool", &t.tool)?,
             status: parse_hex("tail.status", &t.status)?,
+            result: parse_hex("tail.result", &t.result)?,
         };
         Ok(Settings { kanban, tail })
     }
@@ -317,10 +327,11 @@ mod tests {
         assert_eq!(settings.kanban.closed, Color::Rgb(134, 114, 104)); // #867268
         assert_eq!(settings.kanban.label, Color::Rgb(179, 114, 143)); // #b3728f
         // Tail section defaults:
-        assert_eq!(settings.tail.header, Color::Rgb(255, 195, 76)); // #ffc34c
+        assert_eq!(settings.tail.header, Color::Rgb(178, 178, 178)); // #b2b2b2
         assert_eq!(settings.tail.message, Color::Rgb(224, 207, 194)); // #e0cfc2
-        assert_eq!(settings.tail.tool, Color::Rgb(134, 114, 104)); // #867268
+        assert_eq!(settings.tail.tool, Color::Rgb(108, 108, 108)); // #6c6c6c
         assert_eq!(settings.tail.status, Color::Rgb(108, 108, 108)); // #6c6c6c
+        assert_eq!(settings.tail.result, Color::Rgb(179, 114, 143)); // #b3728f
         // The written file must round-trip back to the same settings.
         let reloaded = load_or_create(&path).unwrap();
         assert_eq!(settings, reloaded);
@@ -343,7 +354,7 @@ mod tests {
         // Untouched fields fall back to defaults:
         assert_eq!(settings.kanban.closed, Color::Rgb(134, 114, 104)); // #867268
         assert_eq!(settings.kanban.dim, Color::Rgb(108, 108, 108)); // #6c6c6c
-        assert_eq!(settings.tail.header, Color::Rgb(255, 195, 76)); // #ffc34c
+        assert_eq!(settings.tail.header, Color::Rgb(178, 178, 178)); // #b2b2b2
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 

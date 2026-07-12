@@ -74,10 +74,11 @@ A live, read-only board of your issues in the terminal. Colors live in `.pit/set
         "link_related": "#00cdcd"
     },
     "tail": {
-        "header": "#ffc34c",
+        "header": "#b2b2b2",
         "message": "#e0cfc2",
-        "tool": "#867268",
-        "status": "#6c6c6c"
+        "tool": "#6c6c6c",
+        "status": "#6c6c6c",
+        "result": "#b3728f"
     }
 }
 ```
@@ -117,8 +118,8 @@ The subagent's prose word-wraps under a `›` bullet, its tool calls appear as t
 one-liners (thinking is skipped), and the final report closes the stream. Scroll with
 `↑`/`↓`, `PgUp`/`PgDn`, `g`/`G`; scrolling back to the bottom re-pins to the live tail. Press
 `q` to quit. Colors are configurable in the `tail` section of `.pit/settings.json` (`header`,
-`message`, `tool`, `status`), separate from the board's `kanban` section. Set `PIT_LOG_DIR` to
-read logs from a custom directory.
+`message`, `tool`, `status`, and `result` for the final report), separate from the board's
+`kanban` section. Set `PIT_LOG_DIR` to read logs from a custom directory.
 
 ## Tools
 

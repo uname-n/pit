@@ -395,6 +395,7 @@ fn render(f: &mut Frame, app: &mut App) {
 fn build_lines(entries: &[Entry], width: u16, theme: &TailTheme) -> Vec<Line<'static>> {
     let message = Style::default().fg(theme.message);
     let tool = Style::default().fg(theme.tool);
+    let result = Style::default().fg(theme.result);
     let tool_budget = (width as usize).saturating_sub(2); // leave room for "◦ "
     let mut lines: Vec<Line<'static>> = Vec::new();
     for e in entries {
@@ -402,7 +403,7 @@ fn build_lines(entries: &[Entry], width: u16, theme: &TailTheme) -> Vec<Line<'st
             Entry::Msg(t) => push_prose(&mut lines, t, message),
             Entry::Report(t) => {
                 lines.push(Line::from(""));
-                push_prose(&mut lines, t, message.add_modifier(Modifier::BOLD));
+                push_prose(&mut lines, t, result.add_modifier(Modifier::BOLD));
             }
             Entry::Tool(t) => lines.push(Line::from(vec![
                 Span::styled("◦ ", tool),
