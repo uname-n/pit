@@ -4,6 +4,7 @@ mod init;
 mod kanban;
 mod mcp;
 mod settings;
+mod tail;
 mod types;
 
 use std::path::PathBuf;
@@ -25,9 +26,14 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// live read-only kanban board (TUI)
+    /// Kanban style read-only board
     Kanban,
-    /// scaffold orchestration config files (CLAUDE.md, .mcp.json, .claude/settings.json)
+    /// Follow assistant text from an issue's most recent run log
+    Tail {
+        /// Issue id whose newest .claude/logs/issue-<id>-*.jsonl to follow
+        issue: i64,
+    },
+    /// Scaffold orchestration config files
     Init,
 }
 
@@ -59,20 +65,40 @@ fn main() {
         std::process::exit(1);
     });
 
+    // UI colors live in .pit/settings.json (sibling of the db file), created
+    // with defaults on first run. It carries a `kanban` and a `tail` section.
+    let load_settings = || {
+        let settings_path = db_path
+            .parent()
+            .map(|p| p.join("settings.json"))
+            .unwrap_or_else(|| PathBuf::from("./.pit/settings.json"));
+        settings::load_or_create(&settings_path)
+    };
+
     match cli.command {
         Some(Command::Kanban) => {
-            // Board colors live in .pit/settings.json (sibling of the db file),
-            // created with defaults on first run.
-            let settings_path = db_path
-                .parent()
-                .map(|p| p.join("settings.json"))
-                .unwrap_or_else(|| PathBuf::from("./.pit/settings.json"));
-            let theme = settings::load_or_create(&settings_path).unwrap_or_else(|e| {
+            let settings = load_settings().unwrap_or_else(|e| {
                 eprintln!("pit: kanban error: {e}");
                 std::process::exit(1);
             });
-            if let Err(e) = kanban::run(&db, &theme) {
+            if let Err(e) = kanban::run(&db, &settings.kanban) {
                 eprintln!("pit: kanban error: {e}");
+                std::process::exit(1);
+            }
+        }
+        Some(Command::Tail { issue }) => {
+            let settings = load_settings().unwrap_or_else(|e| {
+                eprintln!("pit: tail error: {e}");
+                std::process::exit(1);
+            });
+            // Logs live under .claude/logs/ (sibling of .pit/, gitignored). It is
+            // independent of PIT_DB, so a dedicated PIT_LOG_DIR override mirrors
+            // how PIT_DB relocates the database.
+            let log_dir = std::env::var("PIT_LOG_DIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| PathBuf::from("./.claude/logs"));
+            if let Err(e) = tail::run(&db, issue, &log_dir, &settings.tail) {
+                eprintln!("pit: tail error: {e}");
                 std::process::exit(1);
             }
         }

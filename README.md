@@ -72,9 +72,17 @@ A live, read-only board of your issues in the terminal. Colors live in `.pit/set
         "link_blocks": "#ff5f5f",
         "link_duplicates": "#b3728f",
         "link_related": "#00cdcd"
+    },
+    "tail": {
+        "header": "#ffc34c",
+        "message": "#e0cfc2",
+        "tool": "#867268",
+        "status": "#6c6c6c"
     }
 }
 ```
+
+The `tail` section themes `pit tail` (see [Following a run](#following-a-run)).
 
 ## Commands
 
@@ -82,8 +90,35 @@ A live, read-only board of your issues in the terminal. Colors live in `.pit/set
 pit            # run as MCP server on stdio (default)
 pit init       # scaffold the orchestration config into the current repo
 pit kanban     # live read-only kanban board
+pit tail <id>  # follow an issue's most recent run log (streams the subagent's replies)
 pit --help     # show all commands
 ```
+
+### Following a run
+
+While a delegated subagent is working, `pit tail <id>` follows its most recent
+`.claude/logs/issue-<id>-*.jsonl` transcript in a full-screen view, pinned to the bottom as
+new events stream in:
+
+```bash
+pit tail 2
+```
+
+```
+pit · #2 · Core data model: ...
+› I'll start by reading the issue to understand the requirements.
+› Now let me explore the codebase structure.
+◦ Read: src/db.rs
+◦ Bash: cargo build
+q · quit
+```
+
+The subagent's prose word-wraps under a `›` bullet, its tool calls appear as truncated `◦`
+one-liners (thinking is skipped), and the final report closes the stream. Scroll with
+`↑`/`↓`, `PgUp`/`PgDn`, `g`/`G`; scrolling back to the bottom re-pins to the live tail. Press
+`q` to quit. Colors are configurable in the `tail` section of `.pit/settings.json` (`header`,
+`message`, `tool`, `status`), separate from the board's `kanban` section. Set `PIT_LOG_DIR` to
+read logs from a custom directory.
 
 ## Tools
 

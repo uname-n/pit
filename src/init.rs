@@ -9,7 +9,7 @@ const REVIEW: &str = include_str!("../template/.claude/bins/review");
 
 /// gitignore entries pit's orchestration workflow relies on. Note `.claude/bins/`
 /// is intentionally NOT ignored — the delegate/review tools are tracked (see CLAUDE.md).
-const GITIGNORE_ENTRIES: [&str; 3] = [".pit/", ".claude/worktrees/", ".claude/logs/"];
+const GITIGNORE_ENTRIES: [&str; 3] = [".pit", ".claude/worktrees", ".claude/logs"];
 
 /// Fixed table of files scaffolded by `pit init`: (target path, embedded
 /// contents, executable). The `.claude/bins/` tools must be executable — see

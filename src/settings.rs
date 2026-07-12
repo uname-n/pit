@@ -1,8 +1,9 @@
-//! User-configurable kanban board colors, loaded from `.pit/settings.json`.
+//! User-configurable UI colors, loaded from `.pit/settings.json`.
 //!
-//! The file stores `#rrggbb` hex codes that map to [`ratatui::style::Color::Rgb`].
-//! Prose rendering in the detail pane (markdown headers / fenced code) is
-//! deliberately NOT part of this theme — those stay fixed in `kanban.rs`.
+//! The file stores `#rrggbb` hex codes that map to [`ratatui::style::Color::Rgb`],
+//! split into a `kanban` section (the board) and a `tail` section (the run
+//! follower). Prose rendering in the detail pane (markdown headers / fenced code)
+//! is deliberately NOT themed — those stay fixed in `kanban.rs`.
 
 use ratatui::style::Color;
 use serde::{Deserialize, Serialize};
@@ -20,6 +21,20 @@ const DEF_LINK_BLOCKS: &str = "#ff5f5f";
 const DEF_LINK_DUPLICATES: &str = "#b3728f";
 const DEF_LINK_RELATED: &str = "#00cdcd";
 
+// Tail-view defaults mirror the board accents the follower originally borrowed:
+// header/footer = in-progress, prose = open, tool calls = closed, status = dim.
+const DEF_TAIL_HEADER: &str = "#b2b2b2";
+const DEF_TAIL_MESSAGE: &str = "#e0cfc2";
+const DEF_TAIL_TOOL: &str = "#6c6c6c";
+const DEF_TAIL_STATUS: &str = "#6c6c6c";
+
+/// Every resolved UI theme parsed from the settings file.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Settings {
+    pub kanban: Theme,
+    pub tail: TailTheme,
+}
+
 /// Board color theme, fully resolved to concrete RGB colors.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Theme {
@@ -34,12 +49,27 @@ pub struct Theme {
     pub link_related: Color,
 }
 
-/// Top-level JSON shape. `#[serde(default)]` lets a file omit the whole
-/// `kanban` object and still parse.
+/// Tail (run follower) color theme, fully resolved to concrete RGB colors.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TailTheme {
+    /// Header line and footer accent.
+    pub header: Color,
+    /// Assistant prose (the `›` bullets).
+    pub message: Color,
+    /// Tool calls (the `◦` one-liners).
+    pub tool: Color,
+    /// The dim interrupted/idle status note.
+    pub status: Color,
+}
+
+/// Top-level JSON shape. `#[serde(default)]` lets a file omit either the
+/// `kanban` or `tail` object (or both) and still parse.
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct RawSettings {
     #[serde(default)]
     kanban: RawKanban,
+    #[serde(default)]
+    tail: RawTail,
 }
 
 /// The `kanban` object. Every field carries a per-field serde default so a
@@ -110,22 +140,68 @@ impl Default for RawKanban {
     }
 }
 
+/// The `tail` object. Like `RawKanban`, every field carries a per-field serde
+/// default so a partial file fills the rest from defaults.
+#[derive(Debug, Serialize, Deserialize)]
+struct RawTail {
+    #[serde(default = "d_tail_header")]
+    header: String,
+    #[serde(default = "d_tail_message")]
+    message: String,
+    #[serde(default = "d_tail_tool")]
+    tool: String,
+    #[serde(default = "d_tail_status")]
+    status: String,
+}
+
+fn d_tail_header() -> String {
+    DEF_TAIL_HEADER.to_string()
+}
+fn d_tail_message() -> String {
+    DEF_TAIL_MESSAGE.to_string()
+}
+fn d_tail_tool() -> String {
+    DEF_TAIL_TOOL.to_string()
+}
+fn d_tail_status() -> String {
+    DEF_TAIL_STATUS.to_string()
+}
+
+impl Default for RawTail {
+    fn default() -> Self {
+        Self {
+            header: d_tail_header(),
+            message: d_tail_message(),
+            tool: d_tail_tool(),
+            status: d_tail_status(),
+        }
+    }
+}
+
 impl RawSettings {
     /// Validate every hex field and resolve it to an RGB [`Color`]. Returns the
     /// first offending field on failure — no silent fallback.
-    fn into_theme(self) -> Result<Theme, String> {
+    fn into_settings(self) -> Result<Settings, String> {
         let k = self.kanban;
-        Ok(Theme {
-            open: parse_hex("open", &k.open)?,
-            in_progress: parse_hex("in_progress", &k.in_progress)?,
-            closed: parse_hex("closed", &k.closed)?,
-            dim: parse_hex("dim", &k.dim)?,
-            muted: parse_hex("muted", &k.muted)?,
-            label: parse_hex("label", &k.label)?,
-            link_blocks: parse_hex("link_blocks", &k.link_blocks)?,
-            link_duplicates: parse_hex("link_duplicates", &k.link_duplicates)?,
-            link_related: parse_hex("link_related", &k.link_related)?,
-        })
+        let kanban = Theme {
+            open: parse_hex("kanban.open", &k.open)?,
+            in_progress: parse_hex("kanban.in_progress", &k.in_progress)?,
+            closed: parse_hex("kanban.closed", &k.closed)?,
+            dim: parse_hex("kanban.dim", &k.dim)?,
+            muted: parse_hex("kanban.muted", &k.muted)?,
+            label: parse_hex("kanban.label", &k.label)?,
+            link_blocks: parse_hex("kanban.link_blocks", &k.link_blocks)?,
+            link_duplicates: parse_hex("kanban.link_duplicates", &k.link_duplicates)?,
+            link_related: parse_hex("kanban.link_related", &k.link_related)?,
+        };
+        let t = self.tail;
+        let tail = TailTheme {
+            header: parse_hex("tail.header", &t.header)?,
+            message: parse_hex("tail.message", &t.message)?,
+            tool: parse_hex("tail.tool", &t.tool)?,
+            status: parse_hex("tail.status", &t.status)?,
+        };
+        Ok(Settings { kanban, tail })
     }
 }
 
@@ -156,16 +232,16 @@ fn hex_err(field: &str, s: &str) -> String {
 ///   directory if needed), then return the default theme.
 /// - Present file: read + parse, filling any omitted color from defaults, then
 ///   validate every hex value.
-pub fn load_or_create(path: &Path) -> Result<Theme, String> {
+pub fn load_or_create(path: &Path) -> Result<Settings, String> {
     if !path.exists() {
         create_default(path)?;
-        return RawSettings::default().into_theme();
+        return RawSettings::default().into_settings();
     }
     let text =
         std::fs::read_to_string(path).map_err(|e| format!("settings.json: read failed: {e}"))?;
     let raw: RawSettings =
         serde_json::from_str(&text).map_err(|e| format!("settings.json: invalid JSON: {e}"))?;
-    raw.into_theme()
+    raw.into_settings()
 }
 
 /// Write the default settings file, creating the parent directory if needed.
@@ -234,15 +310,20 @@ mod tests {
     fn load_or_create_writes_default_when_absent() {
         let path = temp_path("absent");
         assert!(!path.exists());
-        let theme = load_or_create(&path).unwrap();
+        let settings = load_or_create(&path).unwrap();
         assert!(path.exists(), "default file should be created");
-        assert_eq!(theme.open, Color::Rgb(224, 207, 194)); // #e0cfc2
-        assert_eq!(theme.in_progress, Color::Rgb(255, 195, 76)); // #ffc34c
-        assert_eq!(theme.closed, Color::Rgb(134, 114, 104)); // #867268
-        assert_eq!(theme.label, Color::Rgb(179, 114, 143)); // #b3728f
-        // The written file must round-trip back to the same theme.
+        assert_eq!(settings.kanban.open, Color::Rgb(224, 207, 194)); // #e0cfc2
+        assert_eq!(settings.kanban.in_progress, Color::Rgb(255, 195, 76)); // #ffc34c
+        assert_eq!(settings.kanban.closed, Color::Rgb(134, 114, 104)); // #867268
+        assert_eq!(settings.kanban.label, Color::Rgb(179, 114, 143)); // #b3728f
+        // Tail section defaults:
+        assert_eq!(settings.tail.header, Color::Rgb(255, 195, 76)); // #ffc34c
+        assert_eq!(settings.tail.message, Color::Rgb(224, 207, 194)); // #e0cfc2
+        assert_eq!(settings.tail.tool, Color::Rgb(134, 114, 104)); // #867268
+        assert_eq!(settings.tail.status, Color::Rgb(108, 108, 108)); // #6c6c6c
+        // The written file must round-trip back to the same settings.
         let reloaded = load_or_create(&path).unwrap();
-        assert_eq!(theme, reloaded);
+        assert_eq!(settings, reloaded);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
@@ -250,13 +331,19 @@ mod tests {
     fn load_or_create_applies_partial_overrides() {
         let path = temp_path("partial");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, r##"{ "kanban": { "open": "#010203" } }"##).unwrap();
-        let theme = load_or_create(&path).unwrap();
-        // Overridden field:
-        assert_eq!(theme.open, Color::Rgb(1, 2, 3));
+        std::fs::write(
+            &path,
+            r##"{ "kanban": { "open": "#010203" }, "tail": { "tool": "#040506" } }"##,
+        )
+        .unwrap();
+        let settings = load_or_create(&path).unwrap();
+        // Overridden fields, one per section:
+        assert_eq!(settings.kanban.open, Color::Rgb(1, 2, 3));
+        assert_eq!(settings.tail.tool, Color::Rgb(4, 5, 6));
         // Untouched fields fall back to defaults:
-        assert_eq!(theme.closed, Color::Rgb(134, 114, 104)); // #867268
-        assert_eq!(theme.dim, Color::Rgb(108, 108, 108)); // #6c6c6c
+        assert_eq!(settings.kanban.closed, Color::Rgb(134, 114, 104)); // #867268
+        assert_eq!(settings.kanban.dim, Color::Rgb(108, 108, 108)); // #6c6c6c
+        assert_eq!(settings.tail.header, Color::Rgb(255, 195, 76)); // #ffc34c
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
@@ -268,6 +355,20 @@ mod tests {
         let e = load_or_create(&path).unwrap_err();
         assert!(e.contains("open"), "error should name the bad field: {e}");
         assert!(e.contains("xyz"), "error should include the bad value: {e}");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn load_or_create_errors_on_bad_tail_hex() {
+        let path = temp_path("bad_tail_hex");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, r#"{ "tail": { "message": "nope" } }"#).unwrap();
+        let e = load_or_create(&path).unwrap_err();
+        assert!(
+            e.contains("tail.message"),
+            "error should name the bad field: {e}"
+        );
+        assert!(e.contains("nope"), "error should include the bad value: {e}");
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 

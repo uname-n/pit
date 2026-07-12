@@ -410,12 +410,12 @@ fn render_header(f: &mut Frame, area: Rect, app: &App) {
         ),
         Span::raw("  "),
         Span::styled("read-only", Style::default().fg(app.theme.muted)),
-        Span::raw("  ·  "),
+        Span::raw(" · "),
         Span::styled(
             format!("{} issues", app.total),
             Style::default().add_modifier(Modifier::BOLD),
         ),
-        Span::raw("  ·  "),
+        Span::raw(" · "),
         Span::styled(
             format!("refreshed {refresh_msg}"),
             Style::default().fg(app.theme.dim),
@@ -439,7 +439,7 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
         )
     };
     let dim = app.theme.dim;
-    let sep = move || Span::styled("  ·  ", Style::default().fg(dim));
+    let sep = move || Span::styled(" · ", Style::default().fg(dim));
     let lbl = |s: String| Span::styled(s, Style::default());
 
     let line = if app.detail.is_some() {
